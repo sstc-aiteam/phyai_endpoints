@@ -1,3 +1,5 @@
+import base64
+import cv2
 from fastapi import APIRouter, HTTPException
 from app.services.realsense import realsense_service
 
@@ -9,9 +11,15 @@ def capture_image():
     Captures a single frame from the connected RealSense camera and returns it as a Base64-encoded string.
     """
     try:
-        b64_image = realsense_service.capture_image_base64()
+        color_image, _ = realsense_service.capture_images()
+
+        # Encode the image to JPEG
+        success, encoded_img = cv2.imencode('.jpg', color_image)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to encode image to JPEG")
+
+        b64_image = base64.b64encode(encoded_img).decode('utf-8')
         return {
-            "status": "success",
             "image_format": "jpeg",
             "image_base64": b64_image
         }
