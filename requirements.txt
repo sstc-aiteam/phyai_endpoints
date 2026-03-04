@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+pyrealsense2
+opencv-python
+numpy
+pydantic-settings
