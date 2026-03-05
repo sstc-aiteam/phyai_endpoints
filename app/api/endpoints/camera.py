@@ -47,10 +47,10 @@ def capture_visual():
     try:
         color_image, depth_image = realsense_service.capture_images()
 
-        # Convert depth image to a visual format (8-bit color)
-        # The alpha value is a scaling factor to better visualize the depth.
-        depth_colormap = cv2.convertScaleAbs(depth_image, alpha=0.03)
-        depth_colormap = cv2.cvtColor(depth_colormap, cv2.COLOR_GRAY2BGR)
+        # Normalize the depth image to 0-255 range 
+        # This ensures the gradient scales based on what the camera actually sees
+        depth_normalized = cv2.normalize(depth_image, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        depth_colormap = cv2.cvtColor(depth_normalized, cv2.COLOR_GRAY2BGR)
 
         # Combine images horizontally
         combined_image = np.hstack((color_image, depth_colormap))
