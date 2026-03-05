@@ -50,7 +50,7 @@ def capture_visual():
         # Convert depth image to a visual format (8-bit color)
         # The alpha value is a scaling factor to better visualize the depth.
         depth_colormap = cv2.convertScaleAbs(depth_image, alpha=0.03)
-        depth_colormap = cv2.applyColorMap(depth_colormap, cv2.COLORMAP_JET)
+        depth_colormap = cv2.cvtColor(depth_colormap, cv2.COLOR_GRAY2BGR)
 
         # Combine images horizontally
         combined_image = np.hstack((color_image, depth_colormap))
