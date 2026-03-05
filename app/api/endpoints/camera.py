@@ -51,7 +51,7 @@ def capture_visual():
         # This ensures the gradient scales based on what the camera actually sees
         depth_normalized = cv2.normalize(depth_image, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
         # This turns the grayscale into a "heat map" which is much easier to read, i.e., 
-        # blue usually represents "far away" and red represents "close."
+        # blue usually represents "Close to camera" and red represents "Far from camera".
         depth_colormap = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
 
         # Combine images horizontally
