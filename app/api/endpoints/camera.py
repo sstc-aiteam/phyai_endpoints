@@ -4,10 +4,15 @@ import numpy as np
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from app.services.realsense import realsense_service
+from app.api.endpoints.schema import CameraCaptureResponse
 
 router = APIRouter()
 
-@router.get("/capture", summary="Capture image from RealSense camera")
+@router.get(
+        "/capture", 
+        summary="Capture image from RealSense camera", 
+        response_model=CameraCaptureResponse
+)
 def capture():
     """
     Captures a single frame (RGB and Depth) from the connected RealSense camera and returns them as Base64-encoded strings.
@@ -38,7 +43,18 @@ def capture():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to capture image: {str(e)}")
 
-@router.get("/capture_visual", summary="Capture and return a combined RGB and Depth image")
+@router.get(
+    "/capture_visual", 
+    summary="Capture and return a combined RGB and Depth image",
+    response_class=Response,
+    # This part updates the Swagger UI schema
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Return the combined RGB and Depth image as a PNG.",
+        }
+    }
+)
 def capture_visual():
     """
     Captures RGB and Depth frames, combines them side-by-side into a single visual image,
