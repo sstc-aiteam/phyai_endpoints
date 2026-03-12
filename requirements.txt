@@ -4,3 +4,4 @@ pyrealsense2
 opencv-python
 numpy
 pydantic-settings
+ur_rtde # Universal Robots Real-Time Data Exchange (RTDE) library for Python

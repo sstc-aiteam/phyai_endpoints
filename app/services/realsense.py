@@ -34,6 +34,7 @@ class RealSenseService:
             cls._instance.is_initialized = False
             cls._instance.align = None # Initialize to None
             cls._instance.depth_intrinsics = None
+            cls._instance.color_intrinsics = None
         return cls._instance
 
     def _initialize(self):
@@ -72,6 +73,8 @@ class RealSenseService:
             # 4. Get and store intrinsics
             depth_profile = self.profile.get_stream(rs.stream.depth).as_video_stream_profile()
             self.depth_intrinsics = depth_profile.get_intrinsics()
+            color_profile = self.profile.get_stream(rs.stream.color).as_video_stream_profile()
+            self.color_intrinsics = color_profile.get_intrinsics()
             
             self.is_initialized = True
             logging.info("✅ RealSense pipeline started successfully.")
@@ -147,6 +150,7 @@ class RealSenseService:
                 self.is_initialized = False
                 self.align = None
                 self.depth_intrinsics = None
+                self.color_intrinsics = None
         else:
             logger.info("RealSense pipeline was not active/initialized, nothing to stop.")
 
