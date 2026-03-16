@@ -40,7 +40,7 @@ class HandEyeCalibrationService:
             raise RobotConnectionError("Robot IP is not configured. Please call /start first.")
         try:
             logger.info(f"Connecting to robot at {self.robot_ip}...")
-            self.rtde_r = rtde_receive.RTDEReceive(self.robot_ip)
+            self.rtde_r = rtde_receive.RTDEReceiveInterface(self.robot_ip)
             if not self.rtde_r.isConnected():
                 raise RobotConnectionError("Failed to establish connection with the robot controller.")
             self.is_robot_connected = True
