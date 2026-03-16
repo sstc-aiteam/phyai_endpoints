@@ -138,6 +138,26 @@ class RealSenseService:
             logging.error(f"RealSense runtime error during capture: {e}. Device is now considered uninitialized.", exc_info=True)
             raise RealSenseError(f"Error with RealSense camera: {e}") from e
 
+    def deproject_pixel_to_point(self, pixel: list[int], depth: float) -> list[float]:
+        """
+        Deprojects a 2D pixel with a given depth into a 3D point in the camera's coordinate space.
+
+        Args:
+            pixel (list[int]): The [u, v] pixel coordinates.
+            depth (float): The depth at that pixel, in meters.
+
+        Returns:
+            list[float]: The [x, y, z] coordinates of the 3D point.
+            
+        Raises:
+            RealSenseError: If the camera intrinsics are not available.
+        """
+        if not self.color_intrinsics:
+            raise RealSenseError("Cannot deproject point: color intrinsics not available. Ensure the camera is initialized.")
+        
+        # pyrealsense2.rs2_deproject_pixel_to_point takes intrinsics, pixel, and depth
+        return rs.rs2_deproject_pixel_to_point(self.color_intrinsics, pixel, depth)
+
     def shutdown(self):
         """Stops the RealSense pipeline, checking if it was ever initialized."""
         if self.is_initialized:

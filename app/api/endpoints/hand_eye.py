@@ -2,8 +2,11 @@ from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel, Field
 import numpy as np
 import logging
+import os
 
 from app.services.hand_eye_calibration import hand_eye_calibration_service, HandEyeCalibrationError
+from app.services.realsense import realsense_service, RealSenseError
+
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -12,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 class CalibrationConfig(BaseModel):
     robot_ip: str = Field("192.168.50.75", description="IP address of the UR robot.")
-    checkerboard_size: tuple[int, int] = Field((9, 6), description="Inner corners of the checkerboard (width, height).")
+    checkerboard_size: tuple[int, int] = Field((8, 5), description="Inner corners of the checkerboard (width, height).")
     square_size: float = Field(0.025, description="Size of a checkerboard square in meters.")
 
 class StartResponse(BaseModel):
@@ -30,6 +33,16 @@ class StatusResponse(BaseModel):
     points_captured: int
     robot_ip: str | None
     is_robot_connected: bool
+
+class VerifyPointRequest(BaseModel):
+    u: int = Field(..., description="The horizontal pixel coordinate (x-axis) of the point to verify.")
+    v: int = Field(..., description="The vertical pixel coordinate (y-axis) of the point to verify.")
+
+class VerifyPointResponse(BaseModel):
+    message: str
+    target_robot_pose: list[float] = Field(..., description="The calculated target pose [x, y, z, rx, ry, rz] for the robot's TCP.")
+    point_in_camera_frame: list[float] = Field(..., description="The 3D coordinates [x, y, z] of the selected pixel in the camera's frame.")
+
 
 # --- API Endpoints ---
 
@@ -146,3 +159,72 @@ def delete_points():
     """
     hand_eye_calibration_service.clear_points()
     return {"message": "All captured points have been cleared."}
+
+@router.post("/verify_point", response_model=VerifyPointResponse, summary="Verify calibration by calculating a robot target pose")
+def verify_point(req: VerifyPointRequest):
+    """
+    Verifies the hand-eye calibration by performing a forward calculation.
+
+    Given a 2D pixel coordinate (u, v) from the camera's image, this endpoint:
+    1. Reads the current depth value at that pixel.
+    2. Converts the 2D pixel + depth into a 3D point in the camera's coordinate system.
+    3. Loads the saved hand-eye transformation matrix (`handeye_result.npy`).
+    4. Reads the robot's current pose.
+    5. Calculates the world coordinates (in the robot's base frame) of the 3D point.
+
+    The returned `target_robot_pose` can be used to command the robot. If the calibration
+    is correct, the robot's tool tip will move to the physical point that corresponds
+    to the selected pixel.
+    """
+    CALIBRATION_FILE = "handeye_result.npy"
+    if not os.path.exists(CALIBRATION_FILE):
+        raise HTTPException(status_code=404, detail=f"Calibration file '{CALIBRATION_FILE}' not found. Please run a calibration first.")
+
+    try:
+        # 1. Load the hand-eye transformation matrix
+        T_cam2gripper = np.load(CALIBRATION_FILE)
+
+        # 2. Capture image and get depth for the pixel
+        _color_image, depth_image = realsense_service.capture_images()
+        
+        height, width = depth_image.shape
+        if not (0 <= req.u < width and 0 <= req.v < height):
+            raise HTTPException(status_code=400, detail=f"Pixel coordinates ({req.u}, {req.v}) are out of image bounds ({width}x{height}).")
+
+        # Depth from realsense is in mm, convert to meters for deprojection
+        depth_in_meters = depth_image[req.v, req.u] * 0.001
+        
+        if depth_in_meters == 0:
+            raise HTTPException(status_code=400, detail=f"Depth at pixel ({req.u}, {req.v}) is zero. Cannot calculate 3D point. Please select another point.")
+
+        # 3. Deproject pixel to a 3D point in the camera's frame
+        point_in_cam_frame = realsense_service.deproject_pixel_to_point([req.u, req.v], depth_in_meters)
+        P_cam_homogeneous = np.array(point_in_cam_frame + [1.0])
+
+        # 4. Get current robot pose
+        R_gripper2base, t_gripper2base_vec = hand_eye_calibration_service.get_robot_pose()
+        pose_vector = hand_eye_calibration_service.rtde_r.getActualTCPPose()
+        current_orientation_rv = pose_vector[3:]
+
+        T_gripper2base = np.eye(4)
+        T_gripper2base[:3, :3] = R_gripper2base
+        T_gripper2base[:3, 3] = t_gripper2base_vec
+
+        # 5. Calculate the target point in the robot's base frame: P_base = T_gripper2base @ T_cam2gripper @ P_cam
+        P_base_homogeneous = T_gripper2base @ T_cam2gripper @ P_cam_homogeneous
+        target_xyz = P_base_homogeneous[:3]
+
+        # Combine the calculated XYZ with the robot's current orientation for a stable move
+        target_pose = target_xyz.tolist() + current_orientation_rv
+
+        return {
+            "message": "Successfully calculated target robot pose for verification.",
+            "point_in_camera_frame": point_in_cam_frame,
+            "target_robot_pose": target_pose
+        }
+    except (HandEyeCalibrationError, RealSenseError) as e:
+        logger.error(f"Verification failed due to calibration/camera error: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during verification: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
