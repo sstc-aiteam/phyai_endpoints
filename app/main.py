@@ -1,8 +1,19 @@
+import logging
+import sys
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.core.config import settings
 from app.api.router import api_router
 from app.services.realsense import realsense_service
+ 
+# --- Logging Configuration ---
+# set the log level for the root logger to INFO
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stdout,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

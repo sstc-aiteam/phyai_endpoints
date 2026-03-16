@@ -54,6 +54,7 @@ class HandEyeCalibrationService:
         self._connect_robot()  # Ensure connection
         try:
             pose = self.rtde_r.getActualTCPPose()
+            logger.info(f"Current robot pose: {pose}")
             if not self.rtde_r.isConnected():
                 self.is_robot_connected = False
                 raise RobotConnectionError("Robot disconnected during pose retrieval.")
