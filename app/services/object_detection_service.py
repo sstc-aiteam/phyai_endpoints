@@ -107,10 +107,15 @@ class ObjectDetectionService:
             grasp_pose = [bottle_xyz[0], bottle_xyz[1], bottle_xyz[2]] + current_ori
             
             logger.info(f"Executing grasp sequence. Approach: {approach_pose}, Grasp: {grasp_pose}")
-            rtde_c.moveL(approach_pose, 0.5, 0.2)
+            # rtde_c.moveL(approach_pose, 0.5, 0.2)
+            # rtde_c.moveL(grasp_pose, 0.1, 0.05)
+            # logger.info("Gripper action placeholder: Closing gripper...")
+            # rtde_c.moveL(approach_pose, 0.5, 0.2) # Retract
+            rtde_c.moveL(approach_pose, 0.1, 0.2)
             rtde_c.moveL(grasp_pose, 0.1, 0.05)
             logger.info("Gripper action placeholder: Closing gripper...")
-            rtde_c.moveL(approach_pose, 0.5, 0.2) # Retract
+            rtde_c.moveL(approach_pose, 0.1, 0.2) # Retract
+
             return grasp_pose
         else:
             return None
