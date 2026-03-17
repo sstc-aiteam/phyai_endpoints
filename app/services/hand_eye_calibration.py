@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 import logging
+import rtde_control
 import rtde_receive
 
 from app.services.realsense import realsense_service, RealSenseError
@@ -27,6 +28,7 @@ class HandEyeCalibrationService:
         if cls._instance is None:
             cls._instance = super(HandEyeCalibrationService, cls).__new__(cls)
             cls._instance.robot_ip = None
+            cls._instance.rtde_c = None
             cls._instance.rtde_r = None
             cls._instance.is_robot_connected = False
             cls._instance.clear_points()  # Initialize storage
@@ -40,12 +42,16 @@ class HandEyeCalibrationService:
             raise RobotConnectionError("Robot IP is not configured. Please call /start first.")
         try:
             logger.info(f"Connecting to robot at {self.robot_ip}...")
+            # Initialize both control and receive interfaces
             self.rtde_r = rtde_receive.RTDEReceiveInterface(self.robot_ip)
+            self.rtde_c = rtde_control.RTDEControlInterface(self.robot_ip)
             if not self.rtde_r.isConnected():
                 raise RobotConnectionError("Failed to establish connection with the robot controller.")
             self.is_robot_connected = True
             logger.info("✅ Successfully connected to robot.")
         except Exception as e:
+            self.rtde_r = None
+            self.rtde_c = None
             self.is_robot_connected = False
             raise RobotConnectionError(f"Failed to connect to robot: {e}") from e
 

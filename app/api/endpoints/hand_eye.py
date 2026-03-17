@@ -58,6 +58,7 @@ def start_session(config: CalibrationConfig):
         # Invalidate old connection object if IP changes
         hand_eye_calibration_service.is_robot_connected = False
         hand_eye_calibration_service.rtde_r = None
+        hand_eye_calibration_service.rtde_c = None
         
         hand_eye_calibration_service.clear_points()
         
@@ -97,6 +98,7 @@ def capture_point(config: CalibrationConfig = Body(
              hand_eye_calibration_service.robot_ip = config.robot_ip
              hand_eye_calibration_service.is_robot_connected = False
              hand_eye_calibration_service.rtde_r = None
+             hand_eye_calibration_service.rtde_c = None
 
         points_count = hand_eye_calibration_service.capture_calibration_point(
             checkerboard_size=config.checkerboard_size,
