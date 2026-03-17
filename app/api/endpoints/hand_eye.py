@@ -6,6 +6,7 @@ import os
 
 from app.services.hand_eye_calibration import hand_eye_calibration_service, HandEyeCalibrationError
 from app.services.realsense import realsense_service, RealSenseError
+from app.core.config import settings
 
 
 router = APIRouter()
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 # --- Pydantic Models for API ---
 
 class CalibrationConfig(BaseModel):
-    robot_ip: str = Field("192.168.50.75", description="IP address of the UR robot.")
+    robot_ip: str = Field(settings.ROBOT_IP, description="IP address of the UR robot.")
     checkerboard_size: tuple[int, int] = Field((8, 5), description="Inner corners of the checkerboard (width, height).")
     square_size: float = Field(0.025, description="Size of a checkerboard square in meters.")
 
@@ -74,7 +75,7 @@ def capture_point(config: CalibrationConfig = Body(
         "default": {
             "summary": "Default values",
             "value": {
-                "robot_ip": "192.168.50.75",
+                "robot_ip": settings.ROBOT_IP,
                 "checkerboard_size": [9, 6],
                 "square_size": 0.025
             }

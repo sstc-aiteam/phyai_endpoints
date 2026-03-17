@@ -5,6 +5,7 @@ import rtde_control
 import rtde_receive
 
 from app.services.realsense import realsense_service, RealSenseError
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ class HandEyeCalibrationService:
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super(HandEyeCalibrationService, cls).__new__(cls)
-            cls._instance.robot_ip = None
+            cls._instance.robot_ip = settings.ROBOT_IP
             cls._instance.rtde_c = None
             cls._instance.rtde_r = None
             cls._instance.is_robot_connected = False
