@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from fastapi.responses import Response
 import base64
 import cv2
 import logging
@@ -59,42 +60,40 @@ def locate_bottle():
         logger.error(f"Unexpected error in /locate-bottle: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
     
-@router.post("/locate-bottle-visual", response_model=LocateResponse, summary="Locate a bottle and return its pose in the robot's base frame")
+@router.post(
+    "/locate-bottle-visual",
+    summary="Locate a bottle and return a visual detection image",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Returns the camera image with the bottle detection (if any) drawn on it.",
+        }
+    },
+)
 def locate_bottle_visual():
     """
     - Captures an image from the RealSense camera.
     - Uses YOLOv8 to detect a 'bottle' (COCO class ID 39).
-    - Calculates the 3D position of the bottle in the robot's base frame using the stored hand-eye calibration.
+    - Returns the captured image with detection results (bounding box and center point) drawn on it.
     """
     try:
         BOTTLE_CLASS_ID = 39 # 'bottle' in COCO dataset
-        bottle_coords, pixel_coords, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        _, _, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
 
-        b64_image = None
-        if detected_image is not None:
-            success, encoded_img = cv2.imencode('.png', detected_image)
-            if success:
-                b64_image = base64.b64encode(encoded_img).decode('utf-8')
+        if detected_image is None:
+            raise HTTPException(status_code=500, detail="Failed to get an image from the camera service.")
 
-        if bottle_coords is not None:
-            return {
-                "message": "Bottle located successfully.",
-                "object_pose_in_base": bottle_coords.tolist(),
-                "object_pixel_coords": pixel_coords,
-                "detection_image_base64": b64_image
-            }
-        else:
-            return {
-                "message": "Bottle not detected in the current view.",
-                "object_pose_in_base": None,
-                "object_pixel_coords": pixel_coords,
-                "detection_image_base64": b64_image
-            }
+        success, encoded_img = cv2.imencode('.png', detected_image)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to encode image to PNG")
+
+        return Response(content=encoded_img.tobytes(), media_type="image/png")
     except ObjectDetectionError as e:
-        logger.error(f"Failed to locate bottle: {e}", exc_info=True)
+        logger.error(f"Failed to locate bottle for visual: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected error in /locate-bottle: {e}", exc_info=True)
+        logger.error(f"Unexpected error in /locate-bottle-visual: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
