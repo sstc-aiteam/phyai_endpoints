@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class CalibrationConfig(BaseModel):
     robot_ip: str = Field(settings.ROBOT_IP, description="IP address of the UR robot.")
     checkerboard_size: tuple[int, int] = Field((8, 5), description="Inner corners of the checkerboard (width, height).")
-    square_size: float = Field(0.025, description="Size of a checkerboard square in meters.")
+    square_size: float = Field(0.013, description="Size of a checkerboard square in meters.")
 
 class StartResponse(BaseModel):
     message: str

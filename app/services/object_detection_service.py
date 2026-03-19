@@ -41,6 +41,7 @@ class ObjectDetectionService:
 
             object_coords = None
             pixel_coords = None
+            depth_in_meters = None
             
             for box in results.boxes:
                 if int(box.cls) == object_class_id:
@@ -50,6 +51,7 @@ class ObjectDetectionService:
 
                     # 4. Get Depth at Center (depth is in mm from service)
                     depth_in_meters = depth_image[v, u] * 0.001
+                    logger.info(f"Depth at pixel ({u}, {v}): {depth_in_meters:.3f}m")
 
                     if depth_in_meters == 0:
                         dist_subset = []
@@ -83,7 +85,7 @@ class ObjectDetectionService:
                         logger.info(f"Calculated base coordinates: {object_coords.tolist()}")
                         break 
             
-            return object_coords, pixel_coords, color_image
+            return object_coords, pixel_coords, depth_in_meters, color_image
 
         except (HandEyeCalibrationError, RealSenseError) as e:
             raise ObjectDetectionError(f"Error during object detection: {e}") from e
@@ -94,7 +96,7 @@ class ObjectDetectionService:
     def grasp_bottle(self):
         """Finds a bottle and executes a grasp motion sequence with the robot."""
         BOTTLE_CLASS_ID = 39 # 'bottle' in COCO dataset
-        bottle_xyz, _, _ = self.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        bottle_xyz, _, _, _ = self.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
 
         if bottle_xyz is not None:
             rtde_r = hand_eye_calibration_service.rtde_r
