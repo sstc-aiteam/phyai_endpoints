@@ -49,8 +49,8 @@ class ObjectDetectionService:
                     u, v = int((x1 + x2) / 2), int((y1 + y2) / 2)
                     pixel_coords = [u, v]
 
-                    # 4. Get Depth at Center (depth is in mm from service)
-                    depth_in_meters = depth_image[v, u] * 0.001
+                    # 4. Get Depth at Center (raw depth is in units, convert to meters)
+                    depth_in_meters = depth_image[v, u] * realsense_service.depth_scale
                     logger.info(f"Depth at pixel ({u}, {v}): {depth_in_meters:.3f}m")
 
                     if depth_in_meters == 0:
@@ -61,7 +61,7 @@ class ObjectDetectionService:
                                     d_mm = depth_image[v+j, u+i]
                                     if d_mm > 0: dist_subset.append(d_mm)
                         if dist_subset:
-                            depth_in_meters = np.median(dist_subset) * 0.001
+                            depth_in_meters = np.median(dist_subset) * realsense_service.depth_scale
                     
                     if depth_in_meters > 0:
                         # 5. Deproject: Pixel -> Camera 3D

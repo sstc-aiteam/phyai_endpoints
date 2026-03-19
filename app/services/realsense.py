@@ -35,6 +35,7 @@ class RealSenseService:
             cls._instance.align = None # Initialize to None
             cls._instance.depth_intrinsics = None
             cls._instance.color_intrinsics = None
+            cls._instance.depth_scale = None
         return cls._instance
 
     def _initialize(self):
@@ -68,7 +69,8 @@ class RealSenseService:
 
             # Log the depth scale to confirm units (Default is 0.001 meters = 1mm)
             depth_sensor = self.profile.get_device().first_depth_sensor()
-            logger.info(f"RealSense initialized with depth scale: {depth_sensor.get_depth_scale()} meters/unit")
+            self.depth_scale = depth_sensor.get_depth_scale()
+            logger.info(f"RealSense initialized with depth scale: {self.depth_scale} meters/unit")
 
             # 4. Get and store intrinsics
             depth_profile = self.profile.get_stream(rs.stream.depth).as_video_stream_profile()
@@ -98,7 +100,7 @@ class RealSenseService:
         Args:
             use_hole_filling (bool): If True, applies a hole-filling filter to the depth frame. Defaults to False.
         Returns: 
-            A tuple containing (color_image, depth_image). Depth values are in millimeters.
+            A tuple containing (color_image, depth_image). Depth values are raw depth units.
         """
         try:
             # 1. Check/Re-initialize device if not ready       
@@ -171,6 +173,7 @@ class RealSenseService:
                 self.align = None
                 self.depth_intrinsics = None
                 self.color_intrinsics = None
+                self.depth_scale = None
         else:
             logger.info("RealSense pipeline was not active/initialized, nothing to stop.")
 

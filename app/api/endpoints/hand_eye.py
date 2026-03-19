@@ -194,8 +194,8 @@ def verify_point(req: VerifyPointRequest):
         if not (0 <= req.u < width and 0 <= req.v < height):
             raise HTTPException(status_code=400, detail=f"Pixel coordinates ({req.u}, {req.v}) are out of image bounds ({width}x{height}).")
 
-        # Depth from realsense is in mm, convert to meters for deprojection
-        depth_in_meters = depth_image[req.v, req.u] * 0.001
+        # Depth from realsense is in raw units, convert to meters for deprojection
+        depth_in_meters = depth_image[req.v, req.u] * realsense_service.depth_scale
         
         if depth_in_meters == 0:
             raise HTTPException(status_code=400, detail=f"Depth at pixel ({req.u}, {req.v}) is zero. Cannot calculate 3D point. Please select another point.")
