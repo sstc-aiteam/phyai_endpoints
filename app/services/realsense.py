@@ -67,7 +67,8 @@ class RealSenseService:
             self.profile = self.pipeline.start(config)
             self.align = rs.align(rs.stream.color)
 
-            # Log the depth scale to confirm units (Default is 0.001 meters = 1mm)
+            # Log the depth scale to confirm units
+            # D405 has a depth scale of 0.0001 (0.1mm), while D415/D435 typically have 0.001 (1mm)
             depth_sensor = self.profile.get_device().first_depth_sensor()
             self.depth_scale = depth_sensor.get_depth_scale()
             logger.info(f"RealSense initialized with depth scale: {self.depth_scale} meters/unit")
