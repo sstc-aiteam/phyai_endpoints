@@ -1,8 +1,13 @@
 # phyai_endpoints
 
 ## Quick Start
+### Install python packages
 ```
 pip install -r requirements.txt
+```
+
+### Run service
+```
 python run.py
 ``` 
 
