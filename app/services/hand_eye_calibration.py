@@ -85,12 +85,7 @@ class HandEyeCalibrationService:
     def capture_calibration_point(self, checkerboard_size: tuple[int, int], square_size: float):
         """Captures a single calibration point."""
         try:
-            # 1. Get image and intrinsics from RealSense service
-            if not realsense_service.is_initialized or realsense_service.color_intrinsics is None:
-                realsense_service._initialize() # Attempt to initialize if not ready
-                if not realsense_service.is_initialized or realsense_service.color_intrinsics is None:
-                    raise RealSenseError("RealSense service not ready or intrinsics not available.")
-            
+            # 1. Get image from RealSense service. This will also initialize the camera if needed.
             color_image, _ = realsense_service.capture_images()
             gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
 
@@ -103,24 +98,27 @@ class HandEyeCalibrationService:
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
             corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
 
-            # Define object points
+            # 3. Define object points for PnP
             objp = np.zeros((checkerboard_size[0] * checkerboard_size[1], 3), np.float32)
             objp[:, :2] = np.mgrid[0:checkerboard_size[0], 0:checkerboard_size[1]].T.reshape(-1, 2)
             objp *= square_size
 
-            # 3. Get Camera Intrinsics
+            # 4. Get Camera Intrinsics
             intr = realsense_service.color_intrinsics
+            if intr is None:
+                # This case should ideally not be reached if capture_images() is successful
+                raise RealSenseError("RealSense intrinsics not available even after image capture.")
             mtx = np.array([[intr.fx, 0, intr.ppx], [0, intr.fy, intr.ppy], [0, 0, 1]])
             dist = np.array(intr.coeffs)
 
-            # 4. Solve PnP to get target pose relative to camera
+            # 5. Solve PnP to get target pose relative to camera
             _, rvec, tvec = cv2.solvePnP(objp, corners2, mtx, dist)
             R_cam, _ = cv2.Rodrigues(rvec)
 
-            # 5. Get Robot Pose
+            # 6. Get Robot Pose
             R_robot, t_robot = self.get_robot_pose()
 
-            # 6. Store data (correcting a typo from the original script t_vec -> tvec)
+            # 7. Store poses for calibration
             self.R_gripper2base.append(R_robot)
             self.t_gripper2base.append(t_robot)
             self.R_target2cam.append(R_cam)

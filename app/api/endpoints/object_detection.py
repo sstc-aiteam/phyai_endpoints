@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 # --- Pydantic Models ---
 class LocateResponse(BaseModel):
     message: str
+    gripper_translation_vector: list[float] | None = None
     object_pose_in_base: list[float] | None
     object_pixel_coords: list[int] | None
     depth_in_meters: float | None = None
@@ -32,7 +33,7 @@ def locate_bottle():
     """
     try:
         BOTTLE_CLASS_ID = 39 # 'bottle' in COCO dataset
-        bottle_coords, pixel_coords, depth_in_meters, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        gripper_vec, bottle_coords, pixel_coords, depth_in_meters, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
 
         b64_image = None
         if detected_image is not None:
@@ -40,21 +41,25 @@ def locate_bottle():
             if success:
                 b64_image = base64.b64encode(encoded_img).decode('utf-8')
 
+        gripper_vec_list = gripper_vec.tolist() if gripper_vec is not None else None
+
         if bottle_coords is not None:
             return {
                 "message": "Bottle located successfully.",
+                "gripper_translation_vector": gripper_vec_list,
                 "object_pose_in_base": bottle_coords.tolist(),
                 "object_pixel_coords": pixel_coords,
                 "depth_in_meters": depth_in_meters,
-                "detection_image_base64": b64_image
+                "detection_image_base64": b64_image,
             }
         else:
             return {
                 "message": "Bottle not detected in the current view.",
+                "gripper_translation_vector": gripper_vec_list,
                 "object_pose_in_base": None,
                 "object_pixel_coords": pixel_coords,
                 "depth_in_meters": depth_in_meters,
-                "detection_image_base64": b64_image
+                "detection_image_base64": b64_image,
             }
     except ObjectDetectionError as e:
         logger.error(f"Failed to locate bottle: {e}", exc_info=True)
@@ -82,7 +87,7 @@ def locate_bottle_visual():
     """
     try:
         BOTTLE_CLASS_ID = 39 # 'bottle' in COCO dataset
-        _, _, _, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        _, _, _, _, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
 
         if detected_image is None:
             raise HTTPException(status_code=500, detail="Failed to get an image from the camera service.")
