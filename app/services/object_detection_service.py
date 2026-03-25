@@ -3,6 +3,7 @@ import os
 import cv2
 import logging
 
+from app.core.config import settings
 from app.services.realsense import realsense_service, RealSenseError
 from app.services.hand_eye_calibration import hand_eye_calibration_service, HandEyeCalibrationError
 from app.services.yolo_service import yolo_service
@@ -63,10 +64,11 @@ class ObjectDetectionService:
                                     if d_mm > 0: dist_subset.append(d_mm)
                         if dist_subset:
                             depth_in_meters = np.median(dist_subset) * realsense_service.depth_scale
-                    
+
                     if depth_in_meters > 0:
                         # 5. Deproject: Pixel -> Camera 3D
-                        p_cam = realsense_service.deproject_pixel_to_point([u, v], depth_in_meters)
+                        depth_gripper2object = depth_in_meters - settings.GRIPPER_CAMERA_OFFSET_IN_METERS
+                        p_cam = realsense_service.deproject_pixel_to_point([u, v], depth_gripper2object)
                         p_cam_homog = np.array(p_cam + [1.0])
 
                         # 6. Transform: Camera -> Wrist -> Base
@@ -81,11 +83,11 @@ class ObjectDetectionService:
                         cv2.rectangle(color_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
                         cv2.circle(color_image, (u, v), 5, (0, 0, 255), -1)
 
-                        logger.info(f"Found {object_name} at pixel ({u}, {v}) with depth {depth_in_meters:.3f}m.")
+                        logger.info(f"Found {object_name} at pixel ({u}, {v}) with depth to gripper {depth_gripper2object:.3f}m.")
                         logger.info(f"Calculated base coordinates: {object_coords.tolist()}")
                         break 
             
-            return t_gripper2base_vec, object_coords, pixel_coords, depth_in_meters, color_image
+            return t_gripper2base_vec, object_coords, pixel_coords, depth_gripper2object, color_image
 
         except (HandEyeCalibrationError, RealSenseError) as e:
             raise ObjectDetectionError(f"Error during object detection: {e}") from e
