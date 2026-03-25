@@ -112,7 +112,9 @@ class HandEyeCalibrationService:
             dist = np.array(intr.coeffs)
 
             # 5. Solve PnP to get target pose relative to camera
-            _, rvec, tvec = cv2.solvePnP(objp, corners2, mtx, dist)
+            success, rvec, tvec = cv2.solvePnP(objp, corners2, mtx, dist)
+            if not success:
+                raise CalibrationPointError("solvePnP failed to calculate the checkerboard pose.")
             R_cam, _ = cv2.Rodrigues(rvec)
 
             # 6. Get Robot Pose
