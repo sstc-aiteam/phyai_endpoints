@@ -45,14 +45,14 @@ class HandEyeCalibrationService:
             logger.info(f"Connecting to robot at {self.robot_ip}...")
             # Initialize both control and receive interfaces
             self.rtde_r = rtde_receive.RTDEReceiveInterface(self.robot_ip)
-            self.rtde_c = rtde_control.RTDEControlInterface(self.robot_ip)
+            # self.rtde_c = rtde_control.RTDEControlInterface(self.robot_ip)
             if not self.rtde_r.isConnected():
                 raise RobotConnectionError("Failed to establish connection with the robot controller.")
             self.is_robot_connected = True
             logger.info("✅ Successfully connected to robot.")
         except Exception as e:
             self.rtde_r = None
-            self.rtde_c = None
+            # self.rtde_c = None
             self.is_robot_connected = False
             raise RobotConnectionError(f"Failed to connect to robot: {e}") from e
 
