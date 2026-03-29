@@ -44,6 +44,7 @@ class ObjectDetectionService:
             object_coords = None
             pixel_coords = None
             depth_in_meters = None
+            depth_gripper2object = None
             
             for box in results.boxes:
                 if int(box.cls) == object_class_id:
@@ -67,7 +68,7 @@ class ObjectDetectionService:
 
                     if depth_in_meters > 0:
                         # 5. Deproject: Pixel -> Camera 3D
-                        depth_gripper2object = depth_in_meters - settings.GRIPPER_CAMERA_OFFSET_IN_METERS
+                        depth_gripper2object = depth_in_meters - settings.GRIPPER_CAMERA_OFFSET_IN_METERS - settings.GRIPPER_OFFSET_IN_METERS
                         p_cam = realsense_service.deproject_pixel_to_point([u, v], depth_gripper2object)
                         p_cam_homog = np.array(p_cam + [1.0])
 
