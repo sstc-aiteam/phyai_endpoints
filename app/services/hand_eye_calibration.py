@@ -1,5 +1,6 @@
 import numpy as np
 import cv2
+import cv2.aruco as aruco
 import logging
 import rtde_control
 import rtde_receive
@@ -133,6 +134,70 @@ class HandEyeCalibrationService:
         except Exception as e:
             logger.error(f"An unexpected error occurred during point capture: {e}", exc_info=True)
             raise CalibrationPointError(f"Failed to capture calibration point: {e}") from e
+
+    def capture_charuco_calibration_point(self, squares_x: int, squares_y: int, square_length: float, marker_length: float, dictionary_name: str):
+        """Captures a single calibration point using a ChArUco board."""
+        try:
+            # 1. Setup ChArUco board
+            try:
+                # e.g., "DICT_4X4_50"
+                aruco_dict_id = getattr(aruco, dictionary_name)
+                dictionary = aruco.getPredefinedDictionary(aruco_dict_id)
+            except AttributeError:
+                raise CalibrationPointError(f"Invalid ArUco dictionary name: {dictionary_name}")
+
+            # For modern OpenCV versions. If using an older version, this might need to be aruco.CharucoBoard_create(...)
+            board = aruco.CharucoBoard((squares_x, squares_y), square_length, marker_length, dictionary)
+            # For modern OpenCV versions. If using an older version, this might need to be aruco.DetectorParameters_create()
+            params = aruco.DetectorParameters()
+
+            # 2. Get image from RealSense service
+            color_image, _ = realsense_service.capture_images()
+            gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
+
+            # 3. Detect markers and corners
+            corners, ids, _ = aruco.detectMarkers(gray, dictionary, parameters=params)
+
+            if ids is None or len(ids) == 0:
+                raise CalibrationPointError("No ArUco markers detected in the image.")
+
+            # Interpolate Charuco corners
+            retval, charuco_corners, charuco_ids = aruco.interpolateCornersCharuco(corners, ids, gray, board)
+
+            if not retval or charuco_corners is None or len(charuco_corners) < 4:
+                raise CalibrationPointError(f"Not enough ChArUco corners found for pose estimation. Found {len(charuco_corners) if charuco_corners is not None else 0}.")
+
+            # 4. Get Camera Intrinsics
+            intr = realsense_service.color_intrinsics
+            if intr is None:
+                raise RealSenseError("RealSense intrinsics not available.")
+            mtx = np.array([[intr.fx, 0, intr.ppx], [0, intr.fy, intr.ppy], [0, 0, 1]])
+            dist = np.array(intr.coeffs)
+
+            # 5. Estimate pose of the ChArUco board
+            # The function returns a boolean success value, and the rvec and tvec
+            success, rvec, tvec = aruco.estimatePoseCharucoBoard(charuco_corners, charuco_ids, board, mtx, dist)
+            if not success:
+                raise CalibrationPointError("Failed to estimate pose of the ChArUco board.")
+            
+            R_cam, _ = cv2.Rodrigues(rvec)
+
+            # 6. Get Robot Pose
+            R_robot, t_robot = self.get_robot_pose()
+
+            # 7. Store poses for calibration
+            self.R_gripper2base.append(R_robot)
+            self.t_gripper2base.append(t_robot)
+            self.R_target2cam.append(R_cam)
+            self.t_target2cam.append(tvec)
+
+            return len(self.R_gripper2base)
+
+        except (RealSenseError, RobotConnectionError) as e:
+            raise e  # Re-raise specific, informative errors
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during ChArUco point capture: {e}", exc_info=True)
+            raise CalibrationPointError(f"Failed to capture ChArUco calibration point: {e}") from e
 
     def calculate_hand_eye_calibration(self, method=cv2.CALIB_HAND_EYE_TSAI):
         """Performs the hand-eye calibration calculation."""

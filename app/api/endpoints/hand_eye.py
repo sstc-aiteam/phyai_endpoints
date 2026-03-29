@@ -19,6 +19,14 @@ class CalibrationConfig(BaseModel):
     checkerboard_size: tuple[int, int] = Field((8, 5), description="Inner corners of the checkerboard (width, height).")
     square_size: float = Field(0.013, description="Size of a checkerboard square in meters.")
 
+class CharucoCalibrationConfig(BaseModel):
+    robot_ip: str = Field(settings.ROBOT_IP, description="IP address of the UR robot.")
+    squares_x: int = Field(11, description="Number of squares in X direction.")
+    squares_y: int = Field(8, description="Number of squares in Y direction.")
+    square_length: float = Field(0.015, description="Size of a checkerboard square in meters.")
+    marker_length: float = Field(0.015, description="Size of an ArUco marker in meters.")
+    dictionary_name: str = Field("DICT_4X4_50", description="Name of the ArUco dictionary to use (e.g., 'DICT_4X4_50').")
+
 class StartResponse(BaseModel):
     message: str
 
@@ -115,6 +123,44 @@ def capture_point(config: CalibrationConfig = Body(
     except Exception as e:
         logger.error(f"Unexpected error during capture: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+@router.post("/capture-charuco", response_model=CaptureResponse, summary="Capture a calibration point using a ChArUco board")
+def capture_charuco_point(config: CharucoCalibrationConfig):
+    """
+    Captures a single hand-eye calibration point using a ChArUco board.
+
+    This involves:
+    1. Finding the ChArUco board in the camera's view.
+    2. Calculating the board's pose relative to the camera.
+    3. Getting the robot's current tool pose.
+    4. Storing both poses for final calculation.
+    """
+    try:
+        # If the service doesn't have an IP, or if a new one is provided, set it.
+        if not hand_eye_calibration_service.robot_ip or hand_eye_calibration_service.robot_ip != config.robot_ip:
+             hand_eye_calibration_service.robot_ip = config.robot_ip
+             hand_eye_calibration_service.is_robot_connected = False
+             hand_eye_calibration_service.rtde_r = None
+             hand_eye_calibration_service.rtde_c = None
+
+        points_count = hand_eye_calibration_service.capture_charuco_calibration_point(
+            squares_x=config.squares_x,
+            squares_y=config.squares_y,
+            square_length=config.square_length,
+            marker_length=config.marker_length,
+            dictionary_name=config.dictionary_name
+        )
+        return {
+            "points_captured": points_count,
+            "message": f"Successfully captured ChArUco point {points_count}."
+        }
+    except HandEyeCalibrationError as e:
+        logger.error(f"ChArUco calibration error during capture: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error during ChArUco capture: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
 
 @router.post("/calculate", response_model=CalculationResponse, summary="Calculate the hand-eye transformation")
 def calculate_calibration(save_to_file: bool = Body(True, embed=True)):
