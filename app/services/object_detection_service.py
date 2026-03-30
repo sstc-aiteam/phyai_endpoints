@@ -14,6 +14,38 @@ class ObjectDetectionError(Exception):
     pass
 
 class ObjectDetectionService:
+    def _get_3d_point_from_pixel(self, depth_image, u, v):
+        """
+        Calculates the depth and 3D point in the camera frame for a given pixel.
+        If depth is 0, it attempts to find a valid depth in a 5x5 neighborhood.
+
+        Returns:
+            A tuple of (depth_in_meters, p_cam).
+            p_cam will be None if no valid depth is found.
+        """
+        depth_in_meters = depth_image[v, u] * realsense_service.depth_scale
+        logger.info(f"Initial depth at pixel ({u}, {v}): {depth_in_meters:.3f}m")
+
+        if depth_in_meters == 0:
+            logger.info("Initial depth is 0, checking neighborhood...")
+            dist_subset = []
+            for i in range(-2, 3):
+                for j in range(-2, 3):
+                    if 0 <= v + j < depth_image.shape[0] and 0 <= u + i < depth_image.shape[1]:
+                        d_units = depth_image[v + j, u + i]
+                        if d_units > 0:
+                            dist_subset.append(d_units)
+            if dist_subset:
+                depth_in_meters = np.median(dist_subset) * realsense_service.depth_scale
+                logger.info(f"Found valid median depth in neighborhood: {depth_in_meters:.3f}m")
+
+        p_cam = None
+        if depth_in_meters > 0:
+            # Deproject: Pixel -> Camera 3D
+            p_cam = realsense_service.deproject_pixel_to_point([u, v], depth_in_meters)
+
+        return depth_in_meters, p_cam
+
     def locate_object_in_base(self, object_class_id: int, object_name: str):
         """
         Locates a specified object using YOLO and calculates its pose in the robot's base frame.
@@ -27,8 +59,7 @@ class ObjectDetectionService:
             model = yolo_service.get_model()
             T_cam_wrist = np.load(CALIBRATION_FILE)
             
-            # Ensure robot is connected (needed for pose)
-            hand_eye_calibration_service._connect_robot()
+            # Get robot pose (this will also connect to the robot's receive interface if needed)
             R_gripper2base, t_gripper2base_vec = hand_eye_calibration_service.get_robot_pose()
             
             # Ensure camera is ready
@@ -52,27 +83,13 @@ class ObjectDetectionService:
                     u, v = int((x1 + x2) / 2), int((y1 + y2) / 2)
                     pixel_coords = [u, v]
 
-                    # 4. Get Depth at Center (raw depth is in units, convert to meters)
-                    depth_in_meters = depth_image[v, u] * realsense_service.depth_scale
-                    logger.info(f"Depth at pixel ({u}, {v}): {depth_in_meters:.3f}m")
+                    # 4. Get Depth and 3D point in camera frame
+                    depth_in_meters, p_cam = self._get_3d_point_from_pixel(depth_image, u, v)
 
-                    if depth_in_meters == 0:
-                        dist_subset = []
-                        for i in range(-2, 3):
-                            for j in range(-2, 3):
-                                if 0 <= v+j < depth_image.shape[0] and 0 <= u+i < depth_image.shape[1]:
-                                    d_mm = depth_image[v+j, u+i]
-                                    if d_mm > 0: dist_subset.append(d_mm)
-                        if dist_subset:
-                            depth_in_meters = np.median(dist_subset) * realsense_service.depth_scale
-
-                    if depth_in_meters > 0:
-                        # 5. Deproject: Pixel -> Camera 3D
-                        depth_gripper2object = depth_in_meters - settings.GRIPPER_CAMERA_OFFSET_IN_METERS - settings.GRIPPER_OFFSET_IN_METERS
-                        p_cam = realsense_service.deproject_pixel_to_point([u, v], depth_gripper2object)
+                    if p_cam:
+                        # 5. Transform: Camera -> Wrist -> Base
                         p_cam_homog = np.array(p_cam + [1.0])
 
-                        # 6. Transform: Camera -> Wrist -> Base
                         T_wrist_base = np.eye(4)
                         T_wrist_base[:3, :3] = R_gripper2base
                         T_wrist_base[:3, 3] = t_gripper2base_vec
@@ -84,11 +101,11 @@ class ObjectDetectionService:
                         cv2.rectangle(color_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
                         cv2.circle(color_image, (u, v), 5, (0, 0, 255), -1)
 
-                        logger.info(f"Found {object_name} at pixel ({u}, {v}) with depth to gripper {depth_gripper2object:.3f}m.")
+                        logger.info(f"Found {object_name} at pixel ({u}, {v}) with depth to gripper {depth_in_meters:.3f}m.")
                         logger.info(f"Calculated base coordinates: {object_coords.tolist()}")
                         break 
             
-            return t_gripper2base_vec, object_coords, pixel_coords, depth_gripper2object, color_image
+            return t_gripper2base_vec, object_coords, pixel_coords, depth_in_meters, color_image
 
         except (HandEyeCalibrationError, RealSenseError) as e:
             raise ObjectDetectionError(f"Error during object detection: {e}") from e
@@ -102,6 +119,9 @@ class ObjectDetectionService:
         _, bottle_xyz, _, _, _ = self.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
 
         if bottle_xyz is not None:
+            # Ensure the control interface is connected before sending move commands
+            hand_eye_calibration_service._connect_robot()
+
             rtde_r = hand_eye_calibration_service.rtde_r
             rtde_c = hand_eye_calibration_service.rtde_c
             if not rtde_r or not rtde_c:
@@ -112,14 +132,14 @@ class ObjectDetectionService:
             grasp_pose = [bottle_xyz[0], bottle_xyz[1], bottle_xyz[2]] + current_ori
             
             logger.info(f"Executing grasp sequence. Approach: {approach_pose}, Grasp: {grasp_pose}")
-            # rtde_c.moveL(approach_pose, 0.5, 0.2)
-            # rtde_c.moveL(grasp_pose, 0.1, 0.05)
-            # logger.info("Gripper action placeholder: Closing gripper...")
-            # rtde_c.moveL(approach_pose, 0.5, 0.2) # Retract
             rtde_c.moveL(approach_pose, 0.1, 0.2)
+
+            # Use moveL for the final descent and retraction, as these require a straight-line path.
+            # The speed and acceleration values are in m/s and m/s^2.
             rtde_c.moveL(grasp_pose, 0.1, 0.05)
             logger.info("Gripper action placeholder: Closing gripper...")
             rtde_c.moveL(approach_pose, 0.1, 0.2) # Retract
+
 
             return grasp_pose
         else:

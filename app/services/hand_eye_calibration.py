@@ -36,30 +36,48 @@ class HandEyeCalibrationService:
             cls._instance.clear_points()  # Initialize storage
         return cls._instance
 
-    def _connect_robot(self):
-        """Connects to the robot if not already connected."""
+    def _connect_receive(self):
+        """Connects to the robot's receive interface if not already connected."""
         if self.is_robot_connected and self.rtde_r and self.rtde_r.isConnected():
             return
         if not self.robot_ip:
             raise RobotConnectionError("Robot IP is not configured. Please call /start first.")
+
         try:
-            logger.info(f"Connecting to robot at {self.robot_ip}...")
-            # Initialize both control and receive interfaces
+            logger.info(f"Connecting to robot receive interface at {self.robot_ip}...")
             self.rtde_r = rtde_receive.RTDEReceiveInterface(self.robot_ip)
-            # self.rtde_c = rtde_control.RTDEControlInterface(self.robot_ip)
             if not self.rtde_r.isConnected():
-                raise RobotConnectionError("Failed to establish connection with the robot controller.")
+                raise RobotConnectionError("Failed to establish connection with the robot's receive interface.")
             self.is_robot_connected = True
-            logger.info("✅ Successfully connected to robot.")
+            logger.info("✅ Successfully connected to robot receive interface.")
         except Exception as e:
             self.rtde_r = None
-            # self.rtde_c = None
             self.is_robot_connected = False
-            raise RobotConnectionError(f"Failed to connect to robot: {e}") from e
+            raise RobotConnectionError(f"Failed to connect to robot receive interface: {e}") from e
+
+    def _connect_control(self):
+        """Connects to the robot's control interface if not already connected."""
+        if self.rtde_c:
+            return
+        if not self.robot_ip:
+            raise RobotConnectionError("Robot IP is not configured. Please call /start first.")
+
+        try:
+            logger.info(f"Connecting to robot control interface at {self.robot_ip}...")
+            self.rtde_c = rtde_control.RTDEControlInterface(self.robot_ip)
+            logger.info("✅ Successfully connected to robot control interface.")
+        except Exception as e:
+            self.rtde_c = None
+            raise RobotConnectionError(f"Failed to connect to robot control interface: {e}") from e
+
+    def _connect_robot(self):
+        """Connects to both the control and receive interfaces of the robot."""
+        self._connect_receive()
+        self._connect_control()
 
     def get_robot_pose(self):
         """Gets the current 4x4 transform of the UR5 flange."""
-        self._connect_robot()  # Ensure connection
+        self._connect_receive()  # Ensure connection for receiving data
         try:
             pose = self.rtde_r.getActualTCPPose()
             logger.info(f"Current robot pose: {pose}")
