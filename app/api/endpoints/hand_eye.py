@@ -21,9 +21,9 @@ class CalibrationConfig(BaseModel):
 
 class CharucoCalibrationConfig(BaseModel):
     robot_ip: str = Field(settings.ROBOT_IP, description="IP address of the UR robot.")
-    squares_x: int = Field(11, description="Number of squares in X direction.")
-    squares_y: int = Field(8, description="Number of squares in Y direction.")
-    square_length: float = Field(0.015, description="Size of a checkerboard square in meters.")
+    squares_x: int = Field(7, description="Number of squares in X direction.")
+    squares_y: int = Field(5, description="Number of squares in Y direction.")
+    square_length: float = Field(0.02, description="Size of a checkerboard square in meters.")
     marker_length: float = Field(0.015, description="Size of an ArUco marker in meters.")
     dictionary_name: str = Field("DICT_4X4_50", description="Name of the ArUco dictionary to use (e.g., 'DICT_4X4_50').")
 
