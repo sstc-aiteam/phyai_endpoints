@@ -169,20 +169,18 @@ class HandEyeCalibrationService:
             # For modern OpenCV versions. If using an older version, this might need to be aruco.DetectorParameters_create()
             params = aruco.DetectorParameters()
 
+            # Create CharucoDetector
+            charuco_detector = aruco.CharucoDetector(board, detectorParams=params)
+
             # 2. Get image from RealSense service
             color_image, _ = realsense_service.capture_images()
             gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
 
-            # 3. Detect markers and corners
-            corners, ids, _ = aruco.detectMarkers(gray, dictionary, parameters=params)
+            # 3. Detect markers and interpolate Charuco corners in one go
+            charuco_corners, charuco_ids, _, _ = charuco_detector.detectBoard(gray)
 
-            if ids is None or len(ids) == 0:
-                raise CalibrationPointError("No ArUco markers detected in the image.")
-
-            # Interpolate Charuco corners
-            retval, charuco_corners, charuco_ids = aruco.interpolateCornersCharuco(corners, ids, gray, board)
-
-            if not retval or charuco_corners is None or len(charuco_corners) < 4:
+            # Check if enough ChArUco corners were found
+            if charuco_corners is None or len(charuco_corners) < 4:
                 raise CalibrationPointError(f"Not enough ChArUco corners found for pose estimation. Found {len(charuco_corners) if charuco_corners is not None else 0}.")
 
             # 4. Get Camera Intrinsics
