@@ -192,7 +192,10 @@ class HandEyeCalibrationService:
 
             # 5. Estimate pose of the ChArUco board
             # The function returns a boolean success value, and the rvec and tvec
-            success, rvec, tvec = aruco.estimatePoseCharucoBoard(charuco_corners, charuco_ids, board, mtx, dist)
+            # Install package "opencv-contrib-python" if aruco.estimatePoseCharucoBoard is not available
+            rvec = None
+            tvec = None
+            success, rvec, tvec = aruco.estimatePoseCharucoBoard(charuco_corners, charuco_ids, board, mtx, dist, rvec, tvec)
             if not success:
                 raise CalibrationPointError("Failed to estimate pose of the ChArUco board.")
             
