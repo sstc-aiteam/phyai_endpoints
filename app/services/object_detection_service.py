@@ -127,19 +127,56 @@ class ObjectDetectionService:
             if not rtde_r or not rtde_c:
                 raise ObjectDetectionError("Robot interfaces are not available.")
 
-            current_ori = rtde_r.getActualTCPPose()[3:]
-            approach_pose = [bottle_xyz[0], bottle_xyz[1], bottle_xyz[2] + 0.1] + current_ori
-            grasp_pose = [bottle_xyz[0], bottle_xyz[1], bottle_xyz[2]] + current_ori
-            
-            logger.info(f"Executing grasp sequence. Approach: {approach_pose}, Grasp: {grasp_pose}")
-            rtde_c.moveL(approach_pose, 0.1, 0.2)
+            # Get the robot's current orientation as the first option.
+            # This is often a good starting point if the object is already in view.
+            current_pose = rtde_r.getActualTCPPose()
+            current_orientation = current_pose[3:]
 
-            # Use moveL for the final descent and retraction, as these require a straight-line path.
-            # The speed and acceleration values are in m/s and m/s^2.
-            rtde_c.moveL(grasp_pose, 0.1, 0.05)
+            # Define several "top-down" orientations to try, as some may be unreachable
+            # depending on the target's position (e.g., too close to the base).
+            # The values 2.22 are ~pi/sqrt(2), creating a 180-degree rotation around a non-cardinal axis
+            # which helps avoid wrist singularity.
+            grasp_orientations = [
+                current_orientation,
+                [np.pi, 0, 0],  # Primary: 180-deg rotation around tool X
+                [2.22, 2.22, 0],  # Secondary: Non-singular alternative
+                [-2.22, 2.22, 0],  # Tertiary: Another non-singular alternative
+            ]
+
+            reachable_approach_pose = None
+            for orientation in grasp_orientations:
+                approach_pose = [bottle_xyz[0], bottle_xyz[1], bottle_xyz[2] + 0.1] + orientation
+                try:
+                    # Check if the pose is reachable by asking for an IK solution.
+                    # We don't need the solution itself, just to know it exists.
+                    rtde_c.getInverseKinematics(approach_pose)
+                    reachable_approach_pose = approach_pose
+                    logger.info(f"Found reachable approach pose with orientation: {orientation}")
+                    break  # Found a good pose, exit the loop
+                except RuntimeError as e:
+                    logger.warning(f"Approach pose with orientation {orientation} is not reachable: {e}")
+                    continue
+
+            if not reachable_approach_pose:
+                raise ObjectDetectionError(
+                    "Could not find a reachable top-down approach pose for the detected object. "
+                    "The object may be too close to the robot base or outside its workspace."
+                )
+
+            # The grasp pose will use the same successful orientation as the approach pose.
+            grasp_orientation = reachable_approach_pose[3:]
+            grasp_pose = [bottle_xyz[0], bottle_xyz[1], bottle_xyz[2]] + grasp_orientation
+
+            logger.info(f"Executing grasp sequence. Approach: {reachable_approach_pose}, Grasp: {grasp_pose}")
+
+            # Use moveJ for the main approach to give the robot more flexibility to find a
+            # valid joint configuration and avoid joint limits.
+            rtde_c.moveJ_IK(reachable_approach_pose, 0.3, 0.7)
+
+            # Use moveL for the final, precise descent and retraction.
+            rtde_c.moveL(grasp_pose, 0.1, 0.5)
             logger.info("Gripper action placeholder: Closing gripper...")
-            rtde_c.moveL(approach_pose, 0.1, 0.2) # Retract
-
+            rtde_c.moveL(reachable_approach_pose, 0.1, 0.5)  # Retract
 
             return grasp_pose
         else:

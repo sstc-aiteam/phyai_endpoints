@@ -57,7 +57,7 @@ class HandEyeCalibrationService:
 
     def _connect_control(self):
         """Connects to the robot's control interface if not already connected."""
-        if self.rtde_c:
+        if self.rtde_c and self.rtde_c.isConnected():
             return
         if not self.robot_ip:
             raise RobotConnectionError("Robot IP is not configured. Please call /start first.")
