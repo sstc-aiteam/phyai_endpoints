@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 class LocateResponse(BaseModel):
     message: str
     gripper_translation_vector: list[float] | None = None
+    arm_joint_info: list[float] | None = None
     object_pose_in_base: list[float] | None
     object_pixel_coords: list[int] | None
     depth_in_meters: float | None = None
@@ -33,7 +34,7 @@ def locate_bottle():
     """
     try:
         BOTTLE_CLASS_ID = 39 # 'bottle' in COCO dataset
-        gripper_vec, bottle_coords, pixel_coords, depth_in_meters, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        gripper_vec, arm_joint_info, bottle_coords, pixel_coords, depth_in_meters, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
 
         b64_image = None
         if detected_image is not None:
@@ -47,6 +48,7 @@ def locate_bottle():
             return {
                 "message": "Bottle located successfully.",
                 "gripper_translation_vector": gripper_vec_list,
+                "arm_joint_info": arm_joint_info,
                 "object_pose_in_base": bottle_coords.tolist(),
                 "object_pixel_coords": pixel_coords,
                 "depth_in_meters": depth_in_meters,
@@ -56,6 +58,7 @@ def locate_bottle():
             return {
                 "message": "Bottle not detected in the current view.",
                 "gripper_translation_vector": gripper_vec_list,
+                "arm_joint_info": arm_joint_info,
                 "object_pose_in_base": None,
                 "object_pixel_coords": pixel_coords,
                 "depth_in_meters": depth_in_meters,
@@ -87,7 +90,7 @@ def locate_bottle_visual():
     """
     try:
         BOTTLE_CLASS_ID = 39 # 'bottle' in COCO dataset
-        _, _, _, _, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        _, _, _, _, _, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
 
         if detected_image is None:
             raise HTTPException(status_code=500, detail="Failed to get an image from the camera service.")

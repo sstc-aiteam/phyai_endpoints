@@ -93,6 +93,22 @@ class HandEyeCalibrationService:
             self.is_robot_connected = False
             raise RobotConnectionError(f"Failed to get robot pose: {e}") from e
 
+    def get_arm_joint_info(self) -> list[float]:
+        """
+        Gets the current joint positions (q) of the robot arm.
+
+        Returns:
+            list[float]: A list of the robot's current joint positions in radians.
+        """
+        self._connect_receive()  # Ensure connection for receiving data
+        try:
+            joint_positions = self.rtde_r.getActualQ()
+            logger.info(f"Current robot joint positions: {joint_positions}")
+            return joint_positions
+        except Exception as e:
+            self.is_robot_connected = False
+            raise RobotConnectionError(f"Failed to get robot joint information: {e}") from e
+
     def clear_points(self):
         """Clears all captured calibration points."""
         self.R_gripper2base = []

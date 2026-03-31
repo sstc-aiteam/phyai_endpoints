@@ -61,6 +61,7 @@ class ObjectDetectionService:
             
             # Get robot pose (this will also connect to the robot's receive interface if needed)
             R_gripper2base, t_gripper2base_vec = hand_eye_calibration_service.get_robot_pose()
+            arm_joint_info = hand_eye_calibration_service.get_arm_joint_info()
             
             # Ensure camera is ready
             if not realsense_service.is_initialized:
@@ -105,7 +106,7 @@ class ObjectDetectionService:
                         logger.info(f"Calculated base coordinates: {object_coords.tolist()}")
                         break 
             
-            return t_gripper2base_vec, object_coords, pixel_coords, depth_in_meters, color_image
+            return t_gripper2base_vec, arm_joint_info, object_coords, pixel_coords, depth_in_meters, color_image
 
         except (HandEyeCalibrationError, RealSenseError) as e:
             raise ObjectDetectionError(f"Error during object detection: {e}") from e
@@ -116,7 +117,7 @@ class ObjectDetectionService:
     def grasp_bottle(self):
         """Finds a bottle and executes a grasp motion sequence with the robot."""
         BOTTLE_CLASS_ID = 39 # 'bottle' in COCO dataset
-        _, bottle_xyz, _, _, _ = self.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        _, _, bottle_xyz, _, _, _ = self.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
 
         if bottle_xyz is not None:
             # Ensure the control interface is connected before sending move commands
