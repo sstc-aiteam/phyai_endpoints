@@ -128,6 +128,23 @@ class ObjectDetectionService:
             if not rtde_r or not rtde_c:
                 raise ObjectDetectionError("Robot interfaces are not available.")
 
+            # --- Joint Unwinding Logic ---
+            # Get current joint angles to use as a seed for the IK solver
+            q_current = rtde_r.getActualQ()
+            logger.info(f"Current joint angles (rad): {np.round(q_current, 2).tolist()}")
+
+            # Create a "q_near" target for the IK solver that prefers "unwound" joints.
+            # This brings angles into the [-pi, pi] range, avoiding solutions near 360 degrees,
+            # which can cause problems with joint limits on subsequent moves.
+            q_near = q_current[:]  # Make a copy
+            for i in range(len(q_near)):
+                while q_near[i] > np.pi:
+                    q_near[i] -= 2 * np.pi
+                while q_near[i] < -np.pi:
+                    q_near[i] += 2 * np.pi
+            logger.info(f"Targeting unwound joints near: {np.round(q_near, 2).tolist()}")
+            # --- End Joint Unwinding Logic ---
+
             # Get the robot's current orientation as the first option.
             # This is often a good starting point if the object is already in view.
             current_pose = rtde_r.getActualTCPPose()
@@ -145,14 +162,16 @@ class ObjectDetectionService:
             ]
 
             reachable_approach_pose = None
+            ik_solution_approach = None
             for orientation in grasp_orientations:
                 approach_pose = [bottle_xyz[0], bottle_xyz[1], bottle_xyz[2] + 0.1] + orientation
                 try:
-                    # Check if the pose is reachable by asking for an IK solution.
-                    # We don't need the solution itself, just to know it exists.
-                    rtde_c.getInverseKinematics(approach_pose)
+                    # Check if the pose is reachable by asking for an IK solution,
+                    # guiding it towards our "unwound" q_near preference.
+                    ik_solution_approach = rtde_c.getInverseKinematics(approach_pose, q_near)
                     reachable_approach_pose = approach_pose
                     logger.info(f"Found reachable approach pose with orientation: {orientation}")
+                    logger.info(f"IK solution for approach: {np.round(ik_solution_approach, 2).tolist()}")
                     break  # Found a good pose, exit the loop
                 except RuntimeError as e:
                     logger.warning(f"Approach pose with orientation {orientation} is not reachable: {e}")
@@ -170,9 +189,10 @@ class ObjectDetectionService:
 
             logger.info(f"Executing grasp sequence. Approach: {reachable_approach_pose}, Grasp: {grasp_pose}")
 
-            # Use moveJ for the main approach to give the robot more flexibility to find a
-            # valid joint configuration and avoid joint limits.
-            rtde_c.moveJ_IK(reachable_approach_pose, 0.3, 0.7)
+            # Use moveJ with the specific IK solution to move to the approach pose.
+            # This ensures the robot takes the 'unwound' configuration we selected,
+            # giving it more flexibility and avoiding joint limits.
+            rtde_c.moveJ(ik_solution_approach, 0.3, 0.7)
 
             # Use moveL for the final, precise descent and retraction.
             rtde_c.moveL(grasp_pose, 0.1, 0.5)
