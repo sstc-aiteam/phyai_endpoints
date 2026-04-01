@@ -163,18 +163,26 @@ class ObjectDetectionService:
 
             reachable_approach_pose = None
             ik_solution_approach = None
+            reachable_grasp_pose = None
             for orientation in grasp_orientations:
                 approach_pose = [bottle_xyz[0], bottle_xyz[1], bottle_xyz[2] + 0.1] + orientation
+                grasp_pose = [bottle_xyz[0], bottle_xyz[1], bottle_xyz[2]] + orientation
                 try:
-                    # Check if the pose is reachable by asking for an IK solution,
+                    # Check if the approach pose is reachable by asking for an IK solution,
                     # guiding it towards our "unwound" q_near preference.
                     ik_solution_approach = rtde_c.getInverseKinematics(approach_pose, q_near)
+
+                    # Also check if the grasp pose is reachable from that configuration.
+                    # We don't need to store this IK, just confirm it can be found.
+                    rtde_c.getInverseKinematics(grasp_pose, ik_solution_approach)
+
                     reachable_approach_pose = approach_pose
-                    logger.info(f"Found reachable approach pose with orientation: {orientation}")
+                    reachable_grasp_pose = grasp_pose
+                    logger.info(f"Found reachable approach and grasp poses with orientation: {orientation}")
                     logger.info(f"IK solution for approach: {np.round(ik_solution_approach, 2).tolist()}")
                     break  # Found a good pose, exit the loop
                 except RuntimeError as e:
-                    logger.warning(f"Approach pose with orientation {orientation} is not reachable: {e}")
+                    logger.warning(f"Approach or grasp pose with orientation {orientation} is not reachable: {e}")
                     continue
 
             if not reachable_approach_pose:
@@ -183,11 +191,7 @@ class ObjectDetectionService:
                     "The object may be too close to the robot base or outside its workspace."
                 )
 
-            # The grasp pose will use the same successful orientation as the approach pose.
-            grasp_orientation = reachable_approach_pose[3:]
-            grasp_pose = [bottle_xyz[0], bottle_xyz[1], bottle_xyz[2]] + grasp_orientation
-
-            logger.info(f"Executing grasp sequence. Approach: {reachable_approach_pose}, Grasp: {grasp_pose}")
+            logger.info(f"Executing grasp sequence. Approach: {reachable_approach_pose}, Grasp: {reachable_grasp_pose}")
 
             # Use moveJ with the specific IK solution to move to the approach pose.
             # This ensures the robot takes the 'unwound' configuration we selected,
@@ -195,11 +199,11 @@ class ObjectDetectionService:
             rtde_c.moveJ(ik_solution_approach, 0.3, 0.7)
 
             # Use moveL for the final, precise descent and retraction.
-            rtde_c.moveL(grasp_pose, 0.1, 0.5)
+            rtde_c.moveL(reachable_grasp_pose, 0.1, 0.5)
             logger.info("Gripper action placeholder: Closing gripper...")
             rtde_c.moveL(reachable_approach_pose, 0.1, 0.5)  # Retract
 
-            return grasp_pose
+            return reachable_grasp_pose
         else:
             return None
 
