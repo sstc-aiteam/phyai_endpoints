@@ -2,6 +2,7 @@ import numpy as np
 import os
 import cv2
 import logging
+import time
 
 from app.core.config import settings
 from app.services.realsense import realsense_service, RealSenseError
@@ -181,11 +182,24 @@ class ObjectDetectionService:
             # giving it more flexibility and avoiding joint limits.
             rtde_c.moveJ(ik_solution_approach, 0.3, 0.7)
 
-            # Use moveL for the final, precise descent and retraction.
-            rtde_c.moveL(reachable_grasp_pose, 0.1, 0.5)
-            logger.info("Gripper action placeholder: Closing gripper...")
-            rtde_c.moveL(reachable_approach_pose, 0.1, 0.5)  # Retract
+            # --- Gripper Open ---
+            # Assuming a simple gripper controlled by a standard digital output.
+            # Modify output_id and logic (True/False for open/close) as needed.
+            GRIPPER_OUTPUT_ID = 0
+            logger.info("Opening gripper...")
+            rtde_c.setStandardDigitalOut(GRIPPER_OUTPUT_ID, False)
+            time.sleep(0.5) # Wait for gripper to open
 
+            # Use moveL for the final, precise descent.
+            rtde_c.moveL(reachable_grasp_pose, 0.1, 0.5)
+            
+            # --- Gripper Close ---
+            logger.info("Closing gripper to grasp object...")
+            rtde_c.setStandardDigitalOut(GRIPPER_OUTPUT_ID, True)
+            time.sleep(0.5) # Wait for gripper to close
+
+            # Retract back to the approach pose.
+            rtde_c.moveL(reachable_approach_pose, 0.1, 0.5)
             return reachable_grasp_pose
         else:
             return None
