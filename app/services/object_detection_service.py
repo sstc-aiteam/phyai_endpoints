@@ -128,23 +128,6 @@ class ObjectDetectionService:
             if not rtde_r or not rtde_c:
                 raise ObjectDetectionError("Robot interfaces are not available.")
 
-            # --- Joint Unwinding Logic ---
-            # Get current joint angles to use as a seed for the IK solver
-            q_current = rtde_r.getActualQ()
-            logger.info(f"Current joint angles (rad): {np.round(q_current, 2).tolist()}")
-
-            # Create a "q_near" target for the IK solver that prefers "unwound" joints.
-            # This brings angles into the [-pi, pi] range, avoiding solutions near 360 degrees,
-            # which can cause problems with joint limits on subsequent moves.
-            q_near = q_current[:]  # Make a copy
-            for i in range(len(q_near)):
-                while q_near[i] > np.pi:
-                    q_near[i] -= 2 * np.pi
-                while q_near[i] < -np.pi:
-                    q_near[i] += 2 * np.pi
-            logger.info(f"Targeting unwound joints near: {np.round(q_near, 2).tolist()}")
-            # --- End Joint Unwinding Logic ---
-
             # Get the robot's current orientation as the first option.
             # This is often a good starting point if the object is already in view.
             current_pose = rtde_r.getActualTCPPose()
@@ -170,7 +153,7 @@ class ObjectDetectionService:
                 try:
                     # Check if the approach pose is reachable by asking for an IK solution,
                     # guiding it towards our "unwound" q_near preference.
-                    ik_solution_approach = rtde_c.getInverseKinematics(approach_pose, q_near)
+                    ik_solution_approach = rtde_c.getInverseKinematics(approach_pose)
 
                     # Also check if the grasp pose is reachable from that configuration.
                     # We don't need to store this IK, just confirm it can be found.
