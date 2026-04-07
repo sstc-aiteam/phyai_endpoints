@@ -1,3 +1,9 @@
+##
+# This file contains the preamble code for controlling a Robotiq Gripper using the URScript language.
+# The code is sourced from the ur_rtde documentation and adapted to fit our codebase.
+# see https://sdurobotics.gitlab.io/ur_rtde/_static/robotiq_preamble.py
+## 
+
 NEW_LINE = "\n"
 QUOTATION = "\""
 ROBOTIQ_PREAMBLE = "\n".join([

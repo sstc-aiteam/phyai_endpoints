@@ -149,8 +149,19 @@ class ObjectDetectionService:
             ik_solution_approach = None
             reachable_grasp_pose = None
             for orientation in grasp_orientations:
-                approach_pose = [bottle_xyz[0], bottle_xyz[1], bottle_xyz[2] + 0.1] + orientation
-                grasp_pose = [bottle_xyz[0], bottle_xyz[1], bottle_xyz[2]] + orientation
+                # Convert orientation to rotation matrix to find the tool's Z-axis in the base frame
+                R_wrist2base, _ = cv2.Rodrigues(np.array(orientation))
+                tool_z_axis_in_base = R_wrist2base[:, 2]
+
+                # The TCP must be offset back from the object by the length of the gripper (e.g., 10cm)
+                # so the gripper tip lands on the object.
+                gripper_length = 0.1  # 10 cm
+                grasp_xyz = bottle_xyz - (gripper_length * tool_z_axis_in_base)
+
+                # Define approach and grasp poses. The approach is 10cm above the grasp pose in the world Z-axis,
+                # preserving the vertical approach motion.
+                approach_pose = (grasp_xyz + np.array([0, 0, 0.1])).tolist() + orientation
+                grasp_pose = grasp_xyz.tolist() + orientation
                 try:
                     # Check if the approach pose is reachable by asking for an IK solution,
                     # guiding it towards our "unwound" q_near preference.

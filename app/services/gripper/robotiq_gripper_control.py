@@ -1,3 +1,9 @@
+## 
+# RobotiqGripper is a class for controlling a robotiq gripper using the ur_rtde robot interface.
+# the code is sourced from the ur_rtde documentation and adapted to fit our codebase.
+# see https://sdurobotics.gitlab.io/ur_rtde/_static/robotiq_gripper_control.py
+##
+
 import time
 import logging
 import rtde_control
@@ -23,7 +29,6 @@ class RobotiqGripper(object):
            rtde_c (rtde_control.RTDEControlInterface): The interface to use for the communication
         """
         self.rtde_c = rtde_c
-        self.activate()
 
     def call(self, script_name, script_function):
         return self.rtde_c.sendCustomScriptFunction(
