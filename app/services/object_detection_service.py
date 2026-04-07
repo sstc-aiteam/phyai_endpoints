@@ -155,12 +155,13 @@ class ObjectDetectionService:
 
                 # The TCP must be offset back from the object by the length of the gripper (e.g., 10cm)
                 # so the gripper tip lands on the object.
-                gripper_length = 0.1  # 10 cm
+                gripper_length = settings.GRIPPER_LEN_OFFSET_IN_METERS
                 grasp_xyz = bottle_xyz - (gripper_length * tool_z_axis_in_base)
 
                 # Define approach and grasp poses. The approach is 10cm above the grasp pose in the world Z-axis,
                 # preserving the vertical approach motion.
-                approach_pose = (grasp_xyz + np.array([0, 0, 0.1])).tolist() + orientation
+                approach_offset = settings.APPROACH_OFFSET_IN_METERS
+                approach_pose = (grasp_xyz + np.array([0, 0, approach_offset])).tolist() + orientation
                 grasp_pose = grasp_xyz.tolist() + orientation
                 try:
                     # Check if the approach pose is reachable by asking for an IK solution,
@@ -188,6 +189,10 @@ class ObjectDetectionService:
 
             logger.info(f"Executing grasp sequence. Approach: {reachable_approach_pose}, Grasp: {reachable_grasp_pose}")
 
+            gripper = RobotiqGripper(rtde_c)
+            gripper.open()   # Ensure it's open before closing
+            logger.info("Gripper action placeholder: Opening gripper...")
+
             # Use moveJ with the specific IK solution to move to the approach pose.
             # This ensures the robot takes the 'unwound' configuration we selected,
             # giving it more flexibility and avoiding joint limits.
@@ -196,9 +201,6 @@ class ObjectDetectionService:
             # Use moveL for the final, precise descent and retraction.
             rtde_c.moveL(reachable_grasp_pose, 0.1, 0.5)
             
-            gripper = RobotiqGripper(rtde_c)
-            gripper.open()   # Ensure it's open before closing
-            logger.info("Gripper action placeholder: Opening gripper...")
             gripper.close()  # Close to grasp the bottle
             logger.info("Gripper action placeholder: Closing gripper...")
             
