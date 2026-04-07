@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.services.realsense import realsense_service, RealSenseError
 from app.services.hand_eye_calibration import hand_eye_calibration_service, HandEyeCalibrationError
 from app.services.yolo_service import yolo_service
+from app.services.gripper.robotiq_gripper_control import RobotiqGripper
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +184,13 @@ class ObjectDetectionService:
 
             # Use moveL for the final, precise descent and retraction.
             rtde_c.moveL(reachable_grasp_pose, 0.1, 0.5)
+            
+            gripper = RobotiqGripper(rtde_c)
+            gripper.open()   # Ensure it's open before closing
+            logger.info("Gripper action placeholder: Opening gripper...")
+            gripper.close()  # Close to grasp the bottle
             logger.info("Gripper action placeholder: Closing gripper...")
+            
             rtde_c.moveL(reachable_approach_pose, 0.1, 0.5)  # Retract
 
             return reachable_grasp_pose
