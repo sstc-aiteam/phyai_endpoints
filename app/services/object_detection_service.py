@@ -57,14 +57,13 @@ class ObjectDetectionService:
         """
         Locates a specified object using YOLO and calculates its pose in the robot's base frame.
         """
-        CALIBRATION_FILE = "handeye_result.npy"
-        if not os.path.exists(CALIBRATION_FILE):
-            raise ObjectDetectionError(f"Calibration file '{CALIBRATION_FILE}' not found. Please run a hand-eye calibration first.")
+        if not os.path.exists(settings.CALIBRATION_FILE):
+            raise ObjectDetectionError(f"Calibration file '{settings.CALIBRATION_FILE}' not found. Please run a hand-eye calibration first.")
 
         try:
             # 1. Get services ready
             model = yolo_service.get_model()
-            T_cam_wrist = np.load(CALIBRATION_FILE)
+            T_cam_wrist = np.load(settings.CALIBRATION_FILE)
             
             # Get robot pose (this will also connect to the robot's receive interface if needed)
             R_gripper2base, t_gripper2base_vec = hand_eye_calibration_service.get_robot_pose()
@@ -121,10 +120,101 @@ class ObjectDetectionService:
             logger.error(f"Unexpected error in locate_object_in_base: {e}", exc_info=True)
             raise ObjectDetectionError(f"An unexpected error occurred: {e}") from e
 
+    def _center_on_object(self, object_class_id: int, object_name: str, max_iterations=5, tolerance_pixels=10):
+        """
+        Iteratively moves the robot to center the detected object in the camera's view.
+        This is a form of visual servoing.
+        Returns the final 3D coordinates of the object in the base frame once centered.
+        """
+        logger.info(f"Starting centering sequence for {object_name}...")
+
+        # --- Get services ready (once) ---
+        model = yolo_service.get_model()
+        T_cam_wrist = np.load(settings.CALIBRATION_FILE)
+        if not realsense_service.is_initialized:
+            realsense_service._initialize()
+        hand_eye_calibration_service._connect_robot() # Connect both interfaces
+        rtde_c = hand_eye_calibration_service.rtde_c
+        rtde_r = hand_eye_calibration_service.rtde_r
+
+        # --- Camera properties from config ---
+        center_u, center_v = settings.RS_STREAM_WIDTH // 2, settings.RS_STREAM_HEIGHT // 2
+
+        for i in range(max_iterations):
+            logger.info(f"Centering iteration {i+1}/{max_iterations}...")
+
+            # 1. Capture and Detect
+            color_image, depth_image = realsense_service.capture_images()
+            results = model(color_image, verbose=False)[0]
+
+            # Find the target object
+            best_box = None
+            for box in results.boxes:
+                if int(box.cls) == object_class_id:
+                    best_box = box
+                    break
+            
+            if best_box is None:
+                logger.warning(f"Object '{object_name}' not detected in iteration {i+1}. Aborting centering.")
+                return None # Object lost
+
+            x1, y1, x2, y2 = best_box.xyxy[0].cpu().numpy()
+            u, v = int((x1 + x2) / 2), int((y1 + y2) / 2)
+
+            # 2. Check if centered
+            error_u = u - center_u
+            error_v = v - center_v
+            logger.info(f"Object at pixel ({u}, {v}). Center error: ({error_u}, {error_v}) pixels.")
+
+            if abs(error_u) < tolerance_pixels and abs(error_v) < tolerance_pixels:
+                logger.info("Object is centered within tolerance.")
+                depth_in_meters, p_cam = self._get_3d_point_from_pixel(depth_image, u, v)
+                if p_cam is None:
+                    logger.error("Centering successful, but failed to get final 3D position due to depth error.")
+                    return None
+
+                p_cam_homog = np.array(p_cam + [1.0])
+                R_gripper2base, t_gripper2base_vec = hand_eye_calibration_service.get_robot_pose()
+                T_wrist_base = np.eye(4)
+                T_wrist_base[:3, :3] = R_gripper2base
+                T_wrist_base[:3, 3] = t_gripper2base_vec
+                p_base = T_wrist_base @ T_cam_wrist @ p_cam_homog
+                
+                logger.info(f"Final centered object coordinates in base frame: {p_base[:3].tolist()}")
+                return p_base[:3]
+
+            # 3. Calculate required movement for non-centered object
+            depth_in_meters, p_cam = self._get_3d_point_from_pixel(depth_image, u, v)
+            if p_cam is None:
+                logger.warning("Cannot determine object depth, cannot perform centering move. Aborting.")
+                return None
+
+            p_center_view_cam = realsense_service.deproject_pixel_to_point([center_u, center_v], depth_in_meters)
+            delta_p_cam = np.array(p_cam) - np.array(p_center_view_cam)
+
+            # 4. Transform movement vector to base frame
+            R_gripper2base, _ = hand_eye_calibration_service.get_robot_pose()
+            R_cam_base = R_gripper2base @ T_cam_wrist[:3, :3]
+            delta_p_base = R_cam_base @ delta_p_cam
+
+            # 5. Command robot to move
+            current_pose = rtde_r.getActualTCPPose()
+            target_pose = current_pose[:]
+            target_pose[0] += delta_p_base[0]; target_pose[1] += delta_p_base[1]; target_pose[2] += delta_p_base[2]
+            rtde_c.moveL(target_pose, 0.2, 0.5)
+
+        logger.warning("Centering failed to converge within max iterations.")
+        return None
+
     def grasp_bottle(self):
-        """Finds a bottle and executes a grasp motion sequence with the robot."""
+        """Finds a bottle, centers the gripper over it, and executes a grasp motion sequence."""
         BOTTLE_CLASS_ID = 39 # 'bottle' in COCO dataset
-        _, _, bottle_xyz, _, _, _ = self.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        
+        if not os.path.exists(settings.CALIBRATION_FILE):
+            raise ObjectDetectionError(f"Calibration file '{settings.CALIBRATION_FILE}' not found. Please run a hand-eye calibration first.")
+
+        # 1. Center the robot over the bottle using visual servoing
+        bottle_xyz = self._center_on_object(BOTTLE_CLASS_ID, "bottle")
 
         if bottle_xyz is not None:
             # Ensure the control interface is connected before sending move commands
@@ -214,6 +304,6 @@ class ObjectDetectionService:
 
             return reachable_grasp_pose
         else:
-            return None
+            return None # Centering failed or object not found
 
 object_detection_service = ObjectDetectionService()
