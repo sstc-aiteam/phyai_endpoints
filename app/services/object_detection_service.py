@@ -47,6 +47,12 @@ class ObjectDetectionService:
 
         return depth_in_meters, p_cam
 
+    ## 
+    # Main method to locate object and calculate its pose in the robot's base frame
+    # param object_class_id: The class ID of the object to detect (e.g., 39 for 'bottle' in COCO), 
+    #     see reference: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/cfg/datasets/coco.yaml#L18
+    # param object_name: A human-readable name for the object (used for logging and error messages)
+    ## 
     def locate_object_in_base(self, object_class_id: int, object_name: str):
         """
         Locates a specified object using YOLO and calculates its pose in the robot's base frame.
