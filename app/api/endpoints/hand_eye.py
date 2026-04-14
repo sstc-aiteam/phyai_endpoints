@@ -167,14 +167,14 @@ def calculate_calibration(save_to_file: bool = Body(True, embed=True)):
     """
     Performs the hand-eye calibration calculation using all captured points.
     Returns the resulting 4x4 transformation matrix from the camera to the robot's gripper/flange.
-    If `save_to_file` is true, the result is also saved to `handeye_result.npy` on the server.
+    If `save_to_file` is true, the result is also saved to settings.CALIBRATION_FILE on the server.
     """
     try:
         transform_matrix = hand_eye_calibration_service.calculate_hand_eye_calibration()
         
         if save_to_file:
-            np.save("handeye_result.npy", transform_matrix)
-            logger.info("Calibration result saved to handeye_result.npy")
+            np.save(settings.CALIBRATION_FILE, transform_matrix)
+            logger.info(f"Calibration result saved to {settings.CALIBRATION_FILE}")
 
         return {
             "message": f"Hand-eye calibration successful with {len(hand_eye_calibration_service.R_gripper2base)} points.",
@@ -217,7 +217,7 @@ def verify_point(req: VerifyPointRequest):
     Given a 2D pixel coordinate (u, v) from the camera's image, this endpoint:
     1. Reads the current depth value at that pixel.
     2. Converts the 2D pixel + depth into a 3D point in the camera's coordinate system.
-    3. Loads the saved hand-eye transformation matrix (`handeye_result.npy`).
+    3. Loads the saved hand-eye transformation matrix settings.CALIBRATION_FILE.
     4. Reads the robot's current pose.
     5. Calculates the world coordinates (in the robot's base frame) of the 3D point.
 
@@ -225,13 +225,12 @@ def verify_point(req: VerifyPointRequest):
     is correct, the robot's tool tip will move to the physical point that corresponds
     to the selected pixel.
     """
-    CALIBRATION_FILE = "handeye_result.npy"
-    if not os.path.exists(CALIBRATION_FILE):
-        raise HTTPException(status_code=404, detail=f"Calibration file '{CALIBRATION_FILE}' not found. Please run a calibration first.")
+    if not os.path.exists(settings.CALIBRATION_FILE):
+        raise HTTPException(status_code=404, detail=f"Calibration file '{settings.CALIBRATION_FILE}' not found. Please run a calibration first.")
 
     try:
         # 1. Load the hand-eye transformation matrix
-        T_cam2gripper = np.load(CALIBRATION_FILE)
+        T_cam2gripper = np.load(settings.CALIBRATION_FILE)
 
         # 2. Capture image and get depth for the pixel
         _color_image, depth_image = realsense_service.capture_images()

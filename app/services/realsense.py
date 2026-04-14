@@ -4,6 +4,8 @@ import numpy as np
 import pyrealsense2 as rs
 import logging
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,9 +26,6 @@ class FrameCaptureError(RealSenseError):
 class RealSenseService:
     _instance = None
     
-    # Define default stream parameters as class/instance attributes for easy access
-    DEFAULT_WIDTH, DEFAULT_HEIGHT, DEFAULT_FPS = 640, 480, 30
-
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(RealSenseService, cls).__new__(cls)
@@ -59,7 +58,7 @@ class RealSenseService:
                 raise NoDeviceError("No RealSense device connected.")
         
             # 2. Configure streams
-            width, height, fps = self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT, self.DEFAULT_FPS
+            width, height, fps = settings.RS_STREAM_WIDTH, settings.RS_STREAM_HEIGHT, settings.RS_STREAM_FPS
             config.enable_stream(rs.stream.depth, width, height, rs.format.z16, fps)
             config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, fps)
 

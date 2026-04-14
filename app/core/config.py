@@ -5,6 +5,14 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     ROBOT_IP: str = "192.168.50.75"
 
+    # RealSense camera settings
+    RS_STREAM_WIDTH: int = 640
+    RS_STREAM_HEIGHT: int = 480
+    RS_STREAM_FPS: int = 30
+
+    # Hand-eye calibration file
+    CALIBRATION_FILE: str = "handeye_result.npy"
+
     # Distance from TCP (wrist3) offset for the gripper length along the camera's forward axis
     GRIPPER_LEN_OFFSET_IN_METERS: float = 0.15
 
