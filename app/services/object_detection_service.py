@@ -120,13 +120,13 @@ class ObjectDetectionService:
             logger.error(f"Unexpected error in locate_object_in_base: {e}", exc_info=True)
             raise ObjectDetectionError(f"An unexpected error occurred: {e}") from e
 
-    def _center_on_object(self, object_class_id: int, object_name: str, max_iterations=5, tolerance_pixels=10):
+    def _center_on_object(self, object_class_id: int, object_name: str, max_iterations=5, tolerance_pixels=10, gain=0.8):
         """
         Iteratively moves the robot to center the detected object in the camera's view.
         This is a form of visual servoing.
         Returns the final 3D coordinates of the object in the base frame once centered.
         """
-        logger.info(f"Starting centering sequence for {object_name}...")
+        logger.info(f"Starting centering sequence for {object_name} with gain={gain}...")
 
         # --- Get services ready (once) ---
         model = yolo_service.get_model()
@@ -195,12 +195,17 @@ class ObjectDetectionService:
             # 4. Transform movement vector to base frame
             R_gripper2base, _ = hand_eye_calibration_service.get_robot_pose()
             R_cam_base = R_gripper2base @ T_cam_wrist[:3, :3]
-            delta_p_base = R_cam_base @ delta_p_cam
+            # Apply gain to the movement vector for smoother control
+            delta_p_base = gain * (R_cam_base @ delta_p_cam)
 
             # 5. Command robot to move
             current_pose = rtde_r.getActualTCPPose()
             target_pose = current_pose[:]
-            target_pose[0] += delta_p_base[0]; target_pose[1] += delta_p_base[1]; target_pose[2] += delta_p_base[2]
+            # More Pythonic way to update the position
+            target_pose[:3] = (np.array(current_pose[:3]) + delta_p_base).tolist()
+
+            logger.info(f"Required movement in base frame (dx, dy, dz): {np.round(delta_p_base, 4).tolist()}")
+            logger.info(f"Moving robot to target pose: {np.round(target_pose, 4).tolist()}")
             rtde_c.moveL(target_pose, 0.2, 0.5)
 
         logger.warning("Centering failed to converge within max iterations.")
