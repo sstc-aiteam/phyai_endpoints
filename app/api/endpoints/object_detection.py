@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi.responses import Response
 import base64
 import cv2
@@ -23,6 +23,18 @@ class LocateResponse(BaseModel):
 class GraspResponse(BaseModel):
     message: str
     executed_grasp_pose: list[float] | None
+
+class CenterOnObjectRequest(BaseModel):
+    object_class_id: int = Field(39, description="The class ID of the object to detect (e.g., 39 for 'bottle' in COCO).")
+    object_name: str = Field("bottle", description="A human-readable name for the object.")
+    max_iterations: int = Field(5, description="Maximum number of centering iterations.")
+    tolerance_pixels: int = Field(10, description="Pixel tolerance for successful centering.")
+
+class CenterOnObjectResponse(BaseModel):
+    message: str
+    object_pose_in_base: list[float] | None = None
+
+
 
 # --- API Endpoints ---
 @router.post("/locate-bottle", response_model=LocateResponse, summary="Locate a bottle and return its pose")
@@ -106,6 +118,42 @@ def locate_bottle_visual():
     except Exception as e:
         logger.error(f"Unexpected error in /locate-bottle-visual: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+@router.post("/center-on-object", response_model=CenterOnObjectResponse, summary="Center the robot gripper over a detected object")
+def center_on_object(req: CenterOnObjectRequest):
+    """
+    **WARNING: This endpoint will move the connected robot.**
+
+    This endpoint performs a visual servoing sequence to center the robot's TCP over a detected object.
+    1. It iteratively captures images and moves the robot in the XY plane until the object is centered in the camera's view.
+    2. Once centered, it descends vertically to a specified approach height above the object.
+    3. The TCP orientation is kept pointing vertically downwards throughout the process.
+    """
+    try:
+        object_pose = object_detection_service.center_on_object(
+            object_class_id=req.object_class_id,
+            object_name=req.object_name,
+            max_iterations=req.max_iterations,
+            tolerance_pixels=req.tolerance_pixels,
+        )
+        
+        if object_pose is not None:
+            return {
+                "message": f"Successfully centered on '{req.object_name}'.",
+                "object_pose_in_base": object_pose.tolist()
+            }
+        else:
+            # Using 404 is reasonable if the process completes but fails to achieve the goal.
+            raise HTTPException(status_code=404, detail=f"Failed to center on '{req.object_name}'. Object may not be detectable or centering failed to converge.")
+
+    except ObjectDetectionError as e:
+        logger.error(f"Failed to execute centering: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /center-on-object: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
 
 
 @router.post("/grasp-bottle", response_model=GraspResponse, summary="Detect a bottle and execute a grasp motion")
