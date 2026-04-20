@@ -164,61 +164,95 @@ class ObjectDetectionService:
         center_u = settings.RS_STREAM_WIDTH // 2
         center_v = settings.RS_STREAM_HEIGHT // 2
 
+        #------------------------------------------------------------------ #
+        # Vertical offset setting: 
+        # Because the camera is mounted above the gripper, 
+        # when the gripper aligns with the object, the object will appear higher in the image (lower v value). 
+        # Setting a negative value can move the target center point up. 
+        # TODO: Please fine-tune this value based on the actual grasping situation.
         # ------------------------------------------------------------------ #
-        # Phase 1: 垂直對齊 (固定 X,Y, 調整 Z + Wrist 1)
+        VERTICAL_OFFSET_PIXELS = -60 
+        center_v = center_v + VERTICAL_OFFSET_PIXELS
+
         # ------------------------------------------------------------------ #
+        # Phase 0: Initial Horizontal Orientation vectors.
+        # ------------------------------------------------------------------ #
+        logger.info("Phase 0: Adjusting the Gripper (Camera) orientation to be parallel with the horizontal plane...")
+        
+        # get current TCP pose
+        current_pose = rtde_r.getActualTCPPose()
+        
+        # Oritation vectors for parallel alignment:
+        # TODO: fill in the correct rotation vector for parallel alignment between the camera and horizontal plane.  
+        # please get these values from UR teach pendant
+        HORIZONTAL_RX = 0.0  
+        HORIZONTAL_RY = -3.14 
+        HORIZONTAL_RZ = 0.0  
+
+        # establish the Camera horizontal pose (retain the current x, y, z, only overwrite rx, ry, rz)
+        level_pose = current_pose.copy()
+        level_pose[3] = HORIZONTAL_RX
+        level_pose[4] = HORIZONTAL_RY
+        level_pose[5] = HORIZONTAL_RZ
+
+        # use moveL (linear movement) to adjust the pose to keep the Cartesian coordinate position unchanged.
+        rtde_c.moveL(level_pose, speed=0.1, acceleration=0.2)
+        time.sleep(1) # 等待手臂穩定
+
+        # -------------------------------------------------------------------------- #
+        # Phase 1: Vertical Alignment (Fix X,Y and orientation vectors, only adjust Z)
+        # -------------------------------------------------------------------------- #
+        logger.info("[Phase 1] Vertical alignment: Adjusting Z to center object vertically in the image...")
         for i in range(max_iterations):
             color_image, _ = realsense_service.capture_images()
             results = model(color_image, verbose=False)[0]
             best_box = self._get_best_box(results, object_class_id)
 
             if best_box is None:
-                logger.warning("目標丟失，停止 Phase 1")
+                logger.warning("lost target during vertical alignment, stopping Phase 1.")
                 break
 
             u, v = self._get_box_center(best_box)
             error_v = v - center_v
             
             if abs(error_v) < tolerance_pixels:
-                logger.info("垂直對準完成。")
+                logger.info("Vertical alignment complete within tolerance.")
                 break
 
-            # 獲取當前位姿 (Cartesian) 與 關節 (Joints)
+            # get current pose and joints for IK reference
             current_pose = rtde_r.getActualTCPPose() # [x, y, z, rx, ry, rz]
             current_joints = list(rtde_r.getActualQ()) # [q0, q1, q2, q3, q4, q5]
             logger.info(f"Phase 1 Iteration {i+1} current pose: {current_pose}")
 
-            # 計算標準化誤差
+            # calculate the normalized vertical error (v_norm)
             v_norm = error_v / center_v
 
-            # 1. 調整 Z 軸 (Base 座標系)
+            # ajust Z based on vertical error: we want to move the Camera up or down to center the object in the image.
             # error_v < 0 代表物體在影像上方 -> 手臂應向下移動 (Z 減少)
             # error_v > 0 代表物體在影像下方 -> 手臂應向上移動 (Z 增加)
-            z_step = v_norm * GAIN_Z 
-            current_pose[2] += z_step
+            z_step = -v_norm * GAIN_Z 
 
-            # 2. 計算 Wrist 1 補償 (Joint 3)
-            # 手臂下降時，Wrist 1 通常需要向下壓 (增加或減少視安裝方向而定)
-            w1_step = v_norm * GAIN_W1
+            target_pose = current_pose.copy()
+            target_pose[2] += z_step
             
-            # 3. 執行複合移動
-            # 我們先用 IK 解算出新的關節空間，再手動修改 Wrist 1
-            # 提供 current_joints 作為 q_near 參數，可以讓 IK 找到最接近當前姿態的解，
-            # 這能穩定 "wrist1 的朝向"，避免過程中發生非預期的手腕翻轉。
+            # execute a composite movement
+            # use IK to check if the target pose is reachable before commanding the move.
+            # throw RuntimeError if IK fails, preventing the robot from attempting an unreachable move.
             try:
-                target_joints = rtde_c.getInverseKinematics(current_pose, current_joints)
-                target_joints[3] -= w1_step # 直接補償 Wrist 1
-                rtde_c.moveJ(target_joints, speed=0.1, acceleration=0.2)
-                logger.info(f"Phase 1 Iteration {i+1} moving to pose: {current_pose} with Z step: {z_step:.4f}m")
+                _ = rtde_c.getInverseKinematics(target_pose, current_joints)
+                rtde_c.moveL(target_pose, speed=0.1, acceleration=0.2)
+                logger.info(f"Phase 1 Iteration {i+1} moving to pose: {target_pose} with Z step: {z_step:.4f}m")
             except RuntimeError as e:
-                logger.warning(f"垂直對準步驟找不到 IK 解：{e}")
-                # 如果找不到解，可能是目標姿態無法到達，終止對準
+                logger.warning(f"Failed in vertical alignment, target pose may be unreachable or singular: {e}")
+                break
+            except Exception as e:
+                logger.error(f"vertical alignment failed with unexpected error: {e}", exc_info=True)
                 break
             
-            time.sleep(1)  # 等待機械臂穩定，並給相機時間更新畫面
+            time.sleep(1)  # wait to ensure the robot has settled and the camera has updated the image before the next iteration
 
         # ------------------------------------------------------------------ #
-        # Phase 2: 水平對齊 (Wrist 2 + Wrist 3)
+        # Phase 2: Horizontal Alignment (Wrist 2 + Wrist 3)
         # ------------------------------------------------------------------ #
         logger.info("[Phase 2] 調整水平偏角...")
         for i in range(max_iterations):
