@@ -10,6 +10,8 @@ from app.services.hand_eye_calibration import hand_eye_calibration_service, Hand
 from app.services.yolo_service import yolo_service
 from app.services.gripper.robotiq_gripper_control import RobotiqGripper
 
+from scipy.spatial.transform import Rotation as R
+
 logger = logging.getLogger(__name__)
 
 class ObjectDetectionError(Exception):
@@ -144,6 +146,77 @@ class ObjectDetectionService:
         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
         return int((x1 + x2) / 2), int((y1 + y2) / 2)
 
+    def adjust_gripper_parallel(self):
+        """
+        Adjusts the robot's wrist 1 joint to make the gripper parallel to the horizontal plane.
+        It uses a differential kinematic approach to automatically determine the adjustment direction.
+        """
+        hand_eye_calibration_service._connect_robot()
+        rtde_c = hand_eye_calibration_service.rtde_c
+        rtde_r = hand_eye_calibration_service.rtde_r
+
+        iter_count = 0
+        while iter_count < 5:
+            iter_count += 1
+            # 1. Get current TCP pose and convert rotation vector to Euler angles
+            current_pose = rtde_r.getActualTCPPose()
+            current_joints = rtde_r.getActualQ()
+
+            rx, ry, rz = current_pose[3], current_pose[4], current_pose[5]
+            rot_vec = np.array([rx, ry, rz])
+            rotation = R.from_rotvec(rot_vec)
+            euler_rad = rotation.as_euler('xyz', degrees=False)
+            roll, pitch, yaw = euler_rad
+            logger.info(f"Current TCP Euler angles (rad) - Roll: {roll:.2f}, Pitch: {pitch:.2f}, Yaw: {yaw:.2f}")
+
+            # 2. Calculate the pitch error from the target (0 degrees for parallel)
+            target_pitch = 0.01745 * -1
+            error = pitch - target_pitch
+
+            if abs(error) < 0.0087:  # ~0.5 degree in radians
+                logger.info("Gripper is already close to parallel. No adjustment needed.")
+                break
+        
+            try:
+                # Define a small perturbation for the wrist 1 joint (q3)
+                PERTURBATION = 0.0017  # 0.1 degree in radians
+                WRIST1_JOINT_INDEX = 3
+
+                # Create a new set of joint angles with the perturbation
+                perturbed_joints = list(current_joints)
+                perturbed_joints[WRIST1_JOINT_INDEX] += PERTURBATION
+                
+                # Get the new TCP pose for the perturbed joints
+                new_pose = rtde_c.getForwardKinematics(perturbed_joints)
+
+                # Calculate the new pitch from the new pose
+                new_rot_vec = np.array(new_pose[3:])
+                new_rotation = R.from_rotvec(new_rot_vec)
+                new_pitch = new_rotation.as_euler('xyz', degrees=False)[1]
+
+                # Calculate the change in pitch (d_pitch) due to the change in wrist 1 (d_q)
+                d_pitch = new_pitch - pitch
+                jacobian_pitch_q4 = d_pitch / PERTURBATION
+
+                if abs(jacobian_pitch_q4) < 1e-3:
+                    logger.warning(f"Wrist 1 has minimal effect on pitch (Jacobian: {jacobian_pitch_q4:.4f}). Cannot adjust.")
+                    break
+
+                # Calculate the required change in wrist 1 to correct the pitch error
+                required_q4_change = -error / jacobian_pitch_q4
+
+                # Calculate the target joint configuration
+                target_joints = list(current_joints)
+                target_joints[WRIST1_JOINT_INDEX] += required_q4_change
+                rtde_c.moveJ(target_joints, speed=0.2, acceleration=0.4)
+                time.sleep(1)  # wait for the robot to move and stabilize before the next iteration
+                logger.info(f"Adjusting wrist 1 by {required_q4_change:.4f} radians to correct pitch error of {error:.4f} radians.") 
+            except Exception as e:
+                logger.error(f"Error during gripper parallel adjustment: {e}", exc_info=True)
+
+        return None
+        
+
     def center_on_object(self, object_class_id: int, object_name: str, 
                             max_iterations=12, tolerance_pixels=10):
         
@@ -181,104 +254,107 @@ class ObjectDetectionService:
         
         # get current TCP pose
         current_pose = rtde_r.getActualTCPPose()
+        current_joints = rtde_r.getActualQ()
         
-        # Oritation vectors for parallel alignment:
-        # TODO: fill in the correct rotation vector for parallel alignment between the camera and horizontal plane.  
-        # please get these values from UR teach pendant
-        HORIZONTAL_RX = 0.0  
-        HORIZONTAL_RY = -3.14 
-        HORIZONTAL_RZ = 0.0  
+        self.adjust_gripper_parallel()
+       
+        # # Oritation vectors for parallel alignment:
+        # # TODO: fill in the correct rotation vector for parallel alignment between the camera and horizontal plane.  
+        # # please get these values from UR teach pendant
+        # HORIZONTAL_RX = 0.0  
+        # HORIZONTAL_RY = -3.14 
+        # HORIZONTAL_RZ = 0.0  
 
-        # establish the Camera horizontal pose (retain the current x, y, z, only overwrite rx, ry, rz)
-        level_pose = current_pose.copy()
-        level_pose[3] = HORIZONTAL_RX
-        level_pose[4] = HORIZONTAL_RY
-        level_pose[5] = HORIZONTAL_RZ
+        # # establish the Camera horizontal pose (retain the current x, y, z, only overwrite rx, ry, rz)
+        # level_pose = current_pose.copy()
+        # level_pose[3] = HORIZONTAL_RX
+        # level_pose[4] = HORIZONTAL_RY
+        # level_pose[5] = HORIZONTAL_RZ
 
-        # use moveL (linear movement) to adjust the pose to keep the Cartesian coordinate position unchanged.
-        rtde_c.moveL(level_pose, speed=0.1, acceleration=0.2)
-        time.sleep(1) # 等待手臂穩定
+        # # use moveL (linear movement) to adjust the pose to keep the Cartesian coordinate position unchanged.
+        # rtde_c.moveL(level_pose, speed=0.1, acceleration=0.2)
+        # time.sleep(1) # 等待手臂穩定
 
-        # -------------------------------------------------------------------------- #
-        # Phase 1: Vertical Alignment (Fix X,Y and orientation vectors, only adjust Z)
-        # -------------------------------------------------------------------------- #
-        logger.info("[Phase 1] Vertical alignment: Adjusting Z to center object vertically in the image...")
-        for i in range(max_iterations):
-            color_image, _ = realsense_service.capture_images()
-            results = model(color_image, verbose=False)[0]
-            best_box = self._get_best_box(results, object_class_id)
+        # # -------------------------------------------------------------------------- #
+        # # Phase 1: Vertical Alignment (Fix X,Y and orientation vectors, only adjust Z)
+        # # -------------------------------------------------------------------------- #
+        # logger.info("[Phase 1] Vertical alignment: Adjusting Z to center object vertically in the image...")
+        # for i in range(max_iterations):
+        #     color_image, _ = realsense_service.capture_images()
+        #     results = model(color_image, verbose=False)[0]
+        #     best_box = self._get_best_box(results, object_class_id)
 
-            if best_box is None:
-                logger.warning("lost target during vertical alignment, stopping Phase 1.")
-                break
+        #     if best_box is None:
+        #         logger.warning("lost target during vertical alignment, stopping Phase 1.")
+        #         break
 
-            u, v = self._get_box_center(best_box)
-            error_v = v - center_v
+        #     u, v = self._get_box_center(best_box)
+        #     error_v = v - center_v
             
-            if abs(error_v) < tolerance_pixels:
-                logger.info("Vertical alignment complete within tolerance.")
-                break
+        #     if abs(error_v) < tolerance_pixels:
+        #         logger.info("Vertical alignment complete within tolerance.")
+        #         break
 
-            # get current pose and joints for IK reference
-            current_pose = rtde_r.getActualTCPPose() # [x, y, z, rx, ry, rz]
-            current_joints = list(rtde_r.getActualQ()) # [q0, q1, q2, q3, q4, q5]
-            logger.info(f"Phase 1 Iteration {i+1} current pose: {current_pose}")
+        #     # get current pose and joints for IK reference
+        #     current_pose = rtde_r.getActualTCPPose() # [x, y, z, rx, ry, rz]
+        #     current_joints = list(rtde_r.getActualQ()) # [q0, q1, q2, q3, q4, q5]
+        #     logger.info(f"Phase 1 Iteration {i+1} current pose: {current_pose}")
 
-            # calculate the normalized vertical error (v_norm)
-            v_norm = error_v / center_v
+        #     # calculate the normalized vertical error (v_norm)
+        #     v_norm = error_v / center_v
 
-            # ajust Z based on vertical error: we want to move the Camera up or down to center the object in the image.
-            # error_v < 0 代表物體在影像上方 -> 手臂應向下移動 (Z 減少)
-            # error_v > 0 代表物體在影像下方 -> 手臂應向上移動 (Z 增加)
-            z_step = -v_norm * GAIN_Z 
+        #     # ajust Z based on vertical error: we want to move the Camera up or down to center the object in the image.
+        #     # error_v < 0 代表物體在影像上方 -> 手臂應向下移動 (Z 減少)
+        #     # error_v > 0 代表物體在影像下方 -> 手臂應向上移動 (Z 增加)
+        #     z_step = -v_norm * GAIN_Z 
 
-            target_pose = current_pose.copy()
-            target_pose[2] += z_step
+        #     target_pose = current_pose.copy()
+        #     target_pose[2] += z_step
             
-            # execute a composite movement
-            # use IK to check if the target pose is reachable before commanding the move.
-            # throw RuntimeError if IK fails, preventing the robot from attempting an unreachable move.
-            try:
-                _ = rtde_c.getInverseKinematics(target_pose, current_joints)
-                rtde_c.moveL(target_pose, speed=0.1, acceleration=0.2)
-                logger.info(f"Phase 1 Iteration {i+1} moving to pose: {target_pose} with Z step: {z_step:.4f}m")
-            except RuntimeError as e:
-                logger.warning(f"Failed in vertical alignment, target pose may be unreachable or singular: {e}")
-                break
-            except Exception as e:
-                logger.error(f"vertical alignment failed with unexpected error: {e}", exc_info=True)
-                break
+        #     # execute a composite movement
+        #     # use IK to check if the target pose is reachable before commanding the move.
+        #     # throw RuntimeError if IK fails, preventing the robot from attempting an unreachable move.
+        #     try:
+        #         _ = rtde_c.getInverseKinematics(target_pose, current_joints)
+        #         rtde_c.moveL(target_pose, speed=0.1, acceleration=0.2)
+        #         logger.info(f"Phase 1 Iteration {i+1} moving to pose: {target_pose} with Z step: {z_step:.4f}m")
+        #     except RuntimeError as e:
+        #         logger.warning(f"Failed in vertical alignment, target pose may be unreachable or singular: {e}")
+        #         break
+        #     except Exception as e:
+        #         logger.error(f"vertical alignment failed with unexpected error: {e}", exc_info=True)
+        #         break
             
-            time.sleep(1)  # wait to ensure the robot has settled and the camera has updated the image before the next iteration
+        #     time.sleep(1)  # wait to ensure the robot has settled and the camera has updated the image before the next iteration
 
-        # ------------------------------------------------------------------ #
-        # Phase 2: Horizontal Alignment (Wrist 2 + Wrist 3)
-        # ------------------------------------------------------------------ #
-        logger.info("[Phase 2] 調整水平偏角...")
-        for i in range(max_iterations):
-            color_image, _ = realsense_service.capture_images()
-            results = model(color_image, verbose=False)[0]
-            best_box = self._get_best_box(results, object_class_id)
+        # # ------------------------------------------------------------------ #
+        # # Phase 2: Horizontal Alignment (Wrist 2 + Wrist 3)
+        # # ------------------------------------------------------------------ #
+        # logger.info("[Phase 2] 調整水平偏角...")
+        # for i in range(max_iterations):
+        #     color_image, _ = realsense_service.capture_images()
+        #     results = model(color_image, verbose=False)[0]
+        #     best_box = self._get_best_box(results, object_class_id)
 
-            if best_box is None: break
+        #     if best_box is None: break
 
-            u, v = self._get_box_center(best_box)
-            error_u = u - center_u
+        #     u, v = self._get_box_center(best_box)
+        #     error_u = u - center_u
             
-            if abs(error_u) < tolerance_pixels:
-                break
+        #     if abs(error_u) < tolerance_pixels:
+        #         break
 
-            current_joints = list(rtde_r.getActualQ())
-            u_norm = error_u / center_u
-            u_delta = u_norm * GAIN_W2
+        #     current_joints = list(rtde_r.getActualQ())
+        #     u_norm = error_u / center_u
+        #     u_delta = u_norm * GAIN_W2
 
-            # 調整 Wrist 2 轉向物體
-            current_joints[4] += u_delta
-            # Wrist 3 同步補償，保持末端工具（夾爪）相對於物體的旋轉角度不變
-            current_joints[5] -= u_delta 
+        #     # 調整 Wrist 2 轉向物體
+        #     current_joints[4] += u_delta
+        #     # Wrist 3 同步補償，保持末端工具（夾爪）相對於物體的旋轉角度不變
+        #     current_joints[5] -= u_delta 
 
-            rtde_c.moveJ(current_joints, speed=0.2, acceleration=0.4)
-            time.sleep(0.8)    
+        #     rtde_c.moveJ(current_joints, speed=0.2, acceleration=0.4)
+        #     time.sleep(0.8)    
 
     def grasp_bottle(self):
         """Finds a bottle, centers the gripper over it, and executes a grasp motion sequence."""        
