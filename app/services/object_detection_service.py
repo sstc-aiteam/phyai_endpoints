@@ -146,82 +146,64 @@ class ObjectDetectionService:
         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
         return int((x1 + x2) / 2), int((y1 + y2) / 2)
 
-    def adjust_gripper_parallel(self):
+    def adjust_gripper_parallel(self, rtde_r, rtde_c, max_iterations=10):
         """
         Adjusts the robot's wrist 1 joint to make the gripper parallel to the horizontal plane.
         It uses a differential kinematic approach to automatically determine the adjustment direction.
         """
-        hand_eye_calibration_service._connect_robot()
-        rtde_c = hand_eye_calibration_service.rtde_c
-        rtde_r = hand_eye_calibration_service.rtde_r
+        TOLERANCE_RAD = 0.01  # ~0.6 degrees
+        PROBE_DELTA = 0.02    # small wrist1 nudge (rad) used to measure d(ry)/d(wrist1)
+        MAX_STEP = 0.15       # clamp per-iteration correction (rad)
 
-        iter_count = 0
-        while iter_count < 5:
-            iter_count += 1
-            # 1. Get current TCP pose and convert rotation vector to Euler angles
-            current_pose = rtde_r.getActualTCPPose()
-            current_joints = rtde_r.getActualQ()
+        def get_ry_euler(tcp_pose):
+            return R.from_rotvec(tcp_pose[3:6]).as_euler('xyz')[1]
 
-            rx, ry, rz = current_pose[3], current_pose[4], current_pose[5]
-            rot_vec = np.array([rx, ry, rz])
-            rotation = R.from_rotvec(rot_vec)
-            euler_rad = rotation.as_euler('xyz', degrees=False)
-            roll, pitch, yaw = euler_rad
-            logger.info(f"Current TCP Euler angles (rad) - Roll: {roll:.2f}, Pitch: {pitch:.2f}, Yaw: {yaw:.2f}")
+        current_joints = list(rtde_r.getActualQ())
+        ry = get_ry_euler(rtde_r.getActualTCPPose())
 
-            # 2. Calculate the pitch error. The target pitch of -1 degree is a small offset
-            #    that may be required for this specific hardware setup to make the camera point
-            #    vertically downwards. For a perfectly aligned camera, this would be 0.
-            TARGET_PITCH_RAD = np.deg2rad(-1)  # Convert -1 degree to radians, 0.01745 * -1 
-            error = TARGET_PITCH_RAD - pitch
+        if abs(ry) < TOLERANCE_RAD:
+            logger.info(f"adjust_gripper_parallel: already parallel (ry={np.degrees(ry):.2f}°)")
+            return
 
-            CONVERGENCE_THRESHOLD_RAD = np.deg2rad(0.5)
-            
-            if abs(error) < CONVERGENCE_THRESHOLD_RAD: # Stop if error is less than ~0.5 degrees
-                logger.info("Gripper is already close to parallel. No adjustment needed.")
-                break
-        
-            try:
-                # Define a small perturbation for the wrist1 joint (q3), which primarily controls pitch.
-                PERTURBATION = np.deg2rad(0.1)  # 0.1 degree in radians (0.001745 rad)
-                WRIST1_JOINT_INDEX = 3
+        logger.info(f"adjust_gripper_parallel: initial ry={np.degrees(ry):.2f}°, probing wrist1 direction...")
 
-                # Create a new set of joint angles with the perturbation
-                perturbed_joints = list(current_joints)
-                perturbed_joints[WRIST1_JOINT_INDEX] += PERTURBATION
-                
-                # Get the new TCP pose for the perturbed joints
-                new_pose = rtde_r.getForwardKinematics(perturbed_joints)
+        # Probe: nudge wrist1 by +PROBE_DELTA to measure the local Jacobian d(ry)/d(wrist1)
+        probe_joints = current_joints.copy()
+        probe_joints[3] += PROBE_DELTA
+        rtde_c.moveJ(probe_joints, speed=0.2, acceleration=0.4)
+        time.sleep(0.3)
+        ry_after_probe = get_ry_euler(rtde_r.getActualTCPPose())
+        d_ry_dw1 = (ry_after_probe - ry) / PROBE_DELTA
 
-                # Calculate the new pitch from the new pose
-                new_rot_vec = np.array(new_pose[3:])
-                new_rotation = R.from_rotvec(new_rot_vec)
-                new_pitch = new_rotation.as_euler('xyz', degrees=False)[1]
+        # Return to the pre-probe position before starting the correction loop
+        rtde_c.moveJ(current_joints, speed=0.2, acceleration=0.4)
+        time.sleep(0.3)
 
-                # Calculate the change in pitch (d_pitch) due to the change in wrist 1 (d_q)
-                d_pitch = new_pitch - pitch
-                jacobian_pitch_q3 = d_pitch / PERTURBATION
+        if abs(d_ry_dw1) < 1e-6:
+            logger.warning("adjust_gripper_parallel: wrist1 has negligible effect on ry, cannot adjust")
+            return
 
-                if abs(jacobian_pitch_q3) < 1e-3:
-                    logger.warning(f"Wrist 1 has minimal effect on pitch (Jacobian: {jacobian_pitch_q3:.4f}). Cannot adjust.")
-                    break
+        logger.info(f"adjust_gripper_parallel: d(ry)/d(wrist1)={d_ry_dw1:.4f}, starting correction loop")
 
-                # Calculate the required change in wrist 1 to correct the pitch error
-                MAX_STEP_RAD = np.deg2rad(5)  # e.g., max 5° per iteration
-                required_q3_change = np.clip(error / jacobian_pitch_q3, -MAX_STEP_RAD, MAX_STEP_RAD)
+        for i in range(max_iterations):
+            current_joints = list(rtde_r.getActualQ())
+            ry = get_ry_euler(rtde_r.getActualTCPPose())
+            logger.info(f"adjust_gripper_parallel iter {i + 1}: ry={np.degrees(ry):.2f}°")
 
-                # Calculate the target joint configuration
-                target_joints = list(current_joints)
-                target_joints[WRIST1_JOINT_INDEX] += required_q3_change
-                logger.info(f"to adjust wrist 1 by {required_q3_change:.4f} radians to correct pitch error of {error:.4f} radians.") 
-                rtde_c.moveJ(target_joints, speed=0.2, acceleration=0.4)
-                time.sleep(1)  # wait for the robot to move and stabilize before the next iteration
-            except Exception as e:
-                logger.error(f"Error during gripper parallel adjustment: {e}", exc_info=True)
-        
+            if abs(ry) < TOLERANCE_RAD:
+                logger.info(f"adjust_gripper_parallel: converged (ry={np.degrees(ry):.2f}°) after {i + 1} iters")
+                return
 
-    def center_on_object(self, object_class_id: int, object_name: str, 
-                            max_iterations=12, tolerance_pixels=10):
+            # Newton step: delta_w1 = -ry / d(ry)/d(wrist1), clamped to MAX_STEP
+            step = float(np.clip(-ry / d_ry_dw1, -MAX_STEP, MAX_STEP))
+            target_joints = current_joints.copy()
+            target_joints[3] += step
+            rtde_c.moveJ(target_joints, speed=0.2, acceleration=0.4)
+            time.sleep(0.3)
+
+        logger.warning(f"adjust_gripper_parallel: did not converge within {max_iterations} iterations")
+
+    def center_on_object(self, object_class_id: int, object_name: str, max_iterations=10, tolerance_pixels=10):
         
         GAIN_Z = 0.05       # Z 軸移動增益 (公尺/像素比)
         GAIN_W1 = 0.4       # Wrist 1 補償增益 (弧度)
@@ -232,37 +214,31 @@ class ObjectDetectionService:
         model = yolo_service.get_model()
         if not realsense_service.is_initialized:
             realsense_service._initialize()
-        
+
         hand_eye_calibration_service._connect_robot()
-        rtde_c = hand_eye_calibration_service.rtde_c
         rtde_r = hand_eye_calibration_service.rtde_r
+        rtde_c = hand_eye_calibration_service.rtde_c
         
         center_u = settings.RS_STREAM_WIDTH // 2
         center_v = settings.RS_STREAM_HEIGHT // 2
-
-        # get current TCP pose
-        current_pose = rtde_r.getActualTCPPose()
-        current_joints = rtde_r.getActualQ()
-
-        #------------------------------------------------------------------ #
-        # Vertical offset setting: 
-        # Because the camera is mounted above the gripper, 
-        # when the gripper aligns with the object, the object will appear higher in the image (lower v value). 
-        # Setting a negative value can move the target center point up. 
-        # TODO: Please fine-tune this value based on the actual grasping situation.
-        # ------------------------------------------------------------------ #
-        VERTICAL_OFFSET_PIXELS = -60 
-        center_v = center_v + VERTICAL_OFFSET_PIXELS
 
         # ------------------------------------------------------------------ #
         # Phase 0: Initial Horizontal Orientation vectors.
         # ------------------------------------------------------------------ #
         logger.info("Phase 0: Adjusting the Gripper (Camera) orientation to be parallel with the horizontal plane...")
-        self.adjust_gripper_parallel()
+        self.adjust_gripper_parallel(rtde_r, rtde_c, max_iterations)
 
         # -------------------------------------------------------------------------- #
         # Phase 1: Vertical Alignment (Fix X,Y and orientation vectors, only adjust Z)
         # -------------------------------------------------------------------------- #
+        # Vertical offset setting: 
+        # Because the camera is mounted above the gripper, 
+        # when the gripper aligns with the object, the object will appear higher in the image (lower v value). 
+        # Setting a negative value can move the target center point up. 
+        # TODO: Please fine-tune this value based on the actual grasping situation.
+        VERTICAL_OFFSET_PIXELS = -80
+        center_v = center_v + VERTICAL_OFFSET_PIXELS
+
         logger.info("[Phase 1] Vertical alignment: Adjusting Z to center object vertically in the image...")
         for i in range(max_iterations):
             color_image, _ = realsense_service.capture_images()
@@ -280,6 +256,8 @@ class ObjectDetectionService:
                 logger.info("Vertical alignment complete within tolerance.")
                 break
 
+            time.sleep(0.5)  # wait to ensure the robot has settled and the camera has updated the image before the next iteration
+
             # get current pose and joints for IK reference
             current_pose = rtde_r.getActualTCPPose() # [x, y, z, rx, ry, rz]
             current_joints = list(rtde_r.getActualQ()) # [q0, q1, q2, q3, q4, q5]
@@ -291,7 +269,8 @@ class ObjectDetectionService:
             # ajust Z based on vertical error: we want to move the Camera up or down to center the object in the image.
             # error_v < 0 代表物體在影像上方 -> 手臂應向下移動 (Z 減少)
             # error_v > 0 代表物體在影像下方 -> 手臂應向上移動 (Z 增加)
-            z_step = -v_norm * GAIN_Z 
+            z_step = -v_norm * GAIN_Z
+            logger.info(f"Phase 1 Iteration {i+1} vertical error: {error_v} pixels, object is {'Above' if error_v < 0 else 'Below'} center, applying Z step: {z_step:.4f}m")
 
             target_pose = current_pose.copy()
             target_pose[2] += z_step
@@ -309,37 +288,35 @@ class ObjectDetectionService:
             except Exception as e:
                 logger.error(f"vertical alignment failed with unexpected error: {e}", exc_info=True)
                 break
+
+        # # ------------------------------------------------------------------ #
+        # # Phase 2: Horizontal Alignment (Wrist 2 + Wrist 3)
+        # # ------------------------------------------------------------------ #
+        # logger.info("[Phase 2] 調整水平偏角...")
+        # for i in range(max_iterations):
+        #     color_image, _ = realsense_service.capture_images()
+        #     results = model(color_image, verbose=False)[0]
+        #     best_box = self._get_best_box(results, object_class_id)
+
+        #     if best_box is None: break
+
+        #     u, v = self._get_box_center(best_box)
+        #     error_u = u - center_u
             
-            time.sleep(1)  # wait to ensure the robot has settled and the camera has updated the image before the next iteration
+        #     if abs(error_u) < tolerance_pixels:
+        #         break
 
-        # ------------------------------------------------------------------ #
-        # Phase 2: Horizontal Alignment (Wrist 2 + Wrist 3)
-        # ------------------------------------------------------------------ #
-        logger.info("[Phase 2] 調整水平偏角...")
-        for i in range(max_iterations):
-            color_image, _ = realsense_service.capture_images()
-            results = model(color_image, verbose=False)[0]
-            best_box = self._get_best_box(results, object_class_id)
+        #     current_joints = list(rtde_r.getActualQ())
+        #     u_norm = error_u / center_u
+        #     u_delta = u_norm * GAIN_W2
 
-            if best_box is None: break
+        #     # 調整 Wrist 2 轉向物體
+        #     current_joints[4] += u_delta
+        #     # Wrist 3 同步補償，保持末端工具（夾爪）相對於物體的旋轉角度不變
+        #     current_joints[5] -= u_delta 
 
-            u, v = self._get_box_center(best_box)
-            error_u = u - center_u
-            
-            if abs(error_u) < tolerance_pixels:
-                break
-
-            current_joints = list(rtde_r.getActualQ())
-            u_norm = error_u / center_u
-            u_delta = u_norm * GAIN_W2
-
-            # 調整 Wrist 2 轉向物體
-            current_joints[4] += u_delta
-            # Wrist 3 同步補償，保持末端工具（夾爪）相對於物體的旋轉角度不變
-            current_joints[5] -= u_delta 
-
-            rtde_c.moveJ(current_joints, speed=0.2, acceleration=0.4)
-            time.sleep(0.8)    
+        #     rtde_c.moveJ(current_joints, speed=0.2, acceleration=0.4)
+        #     time.sleep(0.8)    
 
     def grasp_bottle(self):
         """Finds a bottle, centers the gripper over it, and executes a grasp motion sequence."""        
