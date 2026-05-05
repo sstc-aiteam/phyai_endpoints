@@ -206,6 +206,7 @@ class ObjectDetectionService:
     def center_on_object(self, object_class_id: int, object_name: str, max_iterations=10, tolerance_pixels=10):
         
         GAIN_Z = 0.05       # Z 軸移動增益 (公尺/像素比)
+        MAX_Z_STEP = 0.02   # cap per-iteration Z movement to 2cm to stay within reachable workspace
         GAIN_W1 = 0.4       # Wrist 1 補償增益 (弧度)
         GAIN_W2 = 0.15      # Wrist 2 水平增益
 
@@ -269,22 +270,35 @@ class ObjectDetectionService:
             # ajust Z based on vertical error: we want to move the Camera up or down to center the object in the image.
             # error_v < 0 代表物體在影像上方 -> 手臂應向下移動 (Z 減少)
             # error_v > 0 代表物體在影像下方 -> 手臂應向上移動 (Z 增加)
-            z_step = -v_norm * GAIN_Z
+            z_step = float(np.clip(-v_norm * GAIN_Z, -MAX_Z_STEP, MAX_Z_STEP))
             logger.info(f"Phase 1 Iteration {i+1} vertical error: {error_v} pixels, object is {'Above' if error_v < 0 else 'Below'} center, applying Z step: {z_step:.4f}m")
 
-            target_pose = current_pose.copy()
-            target_pose[2] += z_step
-            
-            # execute a composite movement
-            # use IK to check if the target pose is reachable before commanding the move.
-            # throw RuntimeError if IK fails, preventing the robot from attempting an unreachable move.
+            # bisect z_step to find the largest reachable step when exact IK fails
             try:
-                _ = rtde_c.getInverseKinematics(target_pose, current_joints)
-                rtde_c.moveL(target_pose, speed=0.1, acceleration=0.2)
-                logger.info(f"Phase 1 Iteration {i+1} moving to pose: {target_pose} with Z step: {z_step:.4f}m")
-            except RuntimeError as e:
-                logger.warning(f"Failed in vertical alignment, target pose may be unreachable or singular: {e}")
-                break
+                MIN_Z_STEP = 0.001  # 1 mm
+                step = z_step
+                target_joints = None
+                approx_pose = None
+
+                for attempt in range(5):
+                    candidate_pose = current_pose.copy()
+                    candidate_pose[2] += step
+                    try:
+                        target_joints = rtde_c.getInverseKinematics(candidate_pose, current_joints)
+                        approx_pose = candidate_pose
+                        break
+                    except RuntimeError:
+                        step *= 0.5
+                        if abs(step) < MIN_Z_STEP:
+                            break
+                        logger.warning(f"Phase 1 Iteration {i+1} IK failed, reducing Z step to {step:.4f}m (attempt {attempt+1})")
+
+                if approx_pose is None:
+                    logger.warning(f"Phase 1 Iteration {i+1} unable to find any reachable pose, stopping vertical alignment")
+                    break
+
+                rtde_c.moveJ(target_joints, speed=0.5, acceleration=1.0)
+                logger.info(f"Phase 1 Iteration {i+1} moving to pose: {approx_pose} with Z step: {step:.4f}m")
             except Exception as e:
                 logger.error(f"vertical alignment failed with unexpected error: {e}", exc_info=True)
                 break
