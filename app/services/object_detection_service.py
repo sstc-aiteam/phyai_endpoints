@@ -207,25 +207,13 @@ class ObjectDetectionService:
 
         logger.warning(f"adjust_gripper_parallel: did not converge within {max_iterations} iterations")
 
-    def center_on_object(self, object_class_id: int, object_name: str, max_iterations=10, tolerance_pixels=10):
-        
+    def adjust_gripper_vertical_alignment(self, object_class_id: int, max_iterations=10, tolerance_pixels=10):
+        """
+        Adjusts the robot's Z position to vertically center the specified object in the camera's view.
+        It uses a proportional control approach based on the pixel error in the vertical direction.
+        """
         GAIN_Z = 0.1        # Z correction gain: how aggressively to move in Z based on vertical pixel error. .
         MAX_Z_STEP = 0.06   # cap per-iteration Z movement to 2cm to stay within reachable workspace
-
-        logger.info(f"Starting centering on {object_name} (class ID {object_class_id}) ...")
-
-        model = yolo_service.get_model()
-        if not realsense_service.is_initialized:
-            realsense_service._initialize()
-        
-        center_u = settings.RS_STREAM_WIDTH // 2
-        center_v = settings.RS_STREAM_HEIGHT // 2
-
-        # ------------------------------------------------------------------ #
-        # Phase 0: Initial Horizontal Orientation vectors.
-        # ------------------------------------------------------------------ #
-        logger.info("Phase 0: Adjusting the Gripper (Camera) orientation to be parallel with the horizontal plane...")
-        self.adjust_gripper_parallel(max_iterations)
 
         # -------------------------------------------------------------------------- #
         # Phase 1: Vertical Alignment (Fix X,Y and orientation vectors, only adjust Z)
@@ -234,9 +222,14 @@ class ObjectDetectionService:
         # Because the camera is mounted above the gripper, 
         # when the gripper aligns with the object, the object will appear higher in the image (lower v value). 
         # Setting a negative value can move the target center point up. 
-        # TODO: Please fine-tune this value based on the actual grasping situation.
         VERTICAL_OFFSET_PIXELS = -80
+
+        center_v = settings.RS_STREAM_HEIGHT // 2        
         center_v = center_v + VERTICAL_OFFSET_PIXELS
+
+        model = yolo_service.get_model()
+        if not realsense_service.is_initialized:
+            realsense_service._initialize()
 
         hand_eye_calibration_service._connect_robot()
         rtde_r = hand_eye_calibration_service.rtde_r
@@ -305,13 +298,23 @@ class ObjectDetectionService:
                 logger.error(f"vertical alignment failed with unexpected error: {e}", exc_info=True)
                 break
 
-        # ------------------------------------------------------------------ #
-        # Phase 2: Horizontal Alignment (Wrist 2)
-        # ------------------------------------------------------------------ #
+    def adjust_gripper_horizontal_alignment(self, object_class_id: int, max_iterations=10, tolerance_pixels=10):
+        """
+        Adjusts the robot's wrist 2 joint to horizontally center the specified object in the camera's view.
+        It uses a probing method to estimate the Jacobian d(u)/d(wrist2) and then applies a proportional control approach based on the horizontal pixel error.
+        """
         PROBE_DELTA_W2 = 0.02  # small wrist2 nudge (rad) to measure d(u)/d(wrist2)
         MAX_W2_STEP = 0.15     # clamp per-iteration wrist2 correction (rad)
 
-        logger.info("[Phase 2] Horizontal alignment: probing Wrist 2 to determine horizontal pixel sensitivity...")
+        center_u = settings.RS_STREAM_WIDTH // 2
+
+        hand_eye_calibration_service._connect_robot()
+        rtde_r = hand_eye_calibration_service.rtde_r
+        rtde_c = hand_eye_calibration_service.rtde_c
+
+        model = yolo_service.get_model()
+        if not realsense_service.is_initialized:
+            realsense_service._initialize()
 
         color_image, _ = realsense_service.capture_images()
         results = model(color_image, verbose=False)[0]
@@ -372,6 +375,31 @@ class ObjectDetectionService:
                         time.sleep(0.2)
                     else:
                         logger.warning(f"[Phase 2] Horizontal alignment did not converge within {max_iterations} iterations.")
+
+    def center_on_object(self, object_class_id: int, object_name: str, max_iterations=10, tolerance_pixels=10):
+        logger.info(f"Starting centering on {object_name} (class ID {object_class_id}) ...")
+
+        model = yolo_service.get_model()
+        if not realsense_service.is_initialized:
+            realsense_service._initialize()
+
+        # ------------------------------------------------------------------ #
+        # Phase 0: Initial Horizontal Orientation vectors.
+        # ------------------------------------------------------------------ #
+        logger.info("Phase 0: Adjusting the Gripper (Camera) orientation to be parallel with the horizontal plane...")
+        self.adjust_gripper_parallel(max_iterations)
+
+        # -------------------------------------------------------------------------- #
+        # Phase 1: Vertical Alignment (Fix X,Y and orientation vectors, only adjust Z)
+        # -------------------------------------------------------------------------- #
+        logger.info("Phase 1: Adjusting the Gripper (Camera) Vertical position to center the object in the image...")
+        self.adjust_gripper_vertical_alignment(object_class_id, max_iterations, tolerance_pixels)
+
+        # ------------------------------------------------------------------ #
+        # Phase 2: Horizontal Alignment (Wrist 2)
+        # ------------------------------------------------------------------ #
+        logger.info("Phase 2: Adjusting the Gripper (Camera) Horizontal position to center the object in the image...")
+        self.adjust_gripper_horizontal_alignment(object_class_id, max_iterations, tolerance_pixels)
 
     def grasp_bottle(self):
         """Finds a bottle, centers the gripper over it, and executes a grasp motion sequence."""        
