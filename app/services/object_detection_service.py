@@ -146,7 +146,7 @@ class ObjectDetectionService:
         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
         return int((x1 + x2) / 2), int((y1 + y2) / 2)
 
-    def adjust_gripper_parallel(self, rtde_r, rtde_c, max_iterations=10):
+    def adjust_gripper_parallel(self, max_iterations=10):
         """
         Adjusts the robot's wrist 1 joint to make the gripper parallel to the horizontal plane.
         It uses a differential kinematic approach to automatically determine the adjustment direction.
@@ -154,6 +154,10 @@ class ObjectDetectionService:
         TOLERANCE_RAD = 0.01  # ~0.6 degrees
         PROBE_DELTA = 0.02    # small wrist1 nudge (rad) used to measure d(ry)/d(wrist1)
         MAX_STEP = 0.15       # clamp per-iteration correction (rad)
+
+        hand_eye_calibration_service._connect_robot()
+        rtde_r = hand_eye_calibration_service.rtde_r
+        rtde_c = hand_eye_calibration_service.rtde_c
 
         def get_ry_euler(tcp_pose):
             return R.from_rotvec(tcp_pose[3:6]).as_euler('xyz')[1]
@@ -205,20 +209,14 @@ class ObjectDetectionService:
 
     def center_on_object(self, object_class_id: int, object_name: str, max_iterations=10, tolerance_pixels=10):
         
-        GAIN_Z = 0.05       # Z 軸移動增益 (公尺/像素比)
-        MAX_Z_STEP = 0.02   # cap per-iteration Z movement to 2cm to stay within reachable workspace
-        GAIN_W1 = 0.4       # Wrist 1 補償增益 (弧度)
-        GAIN_W2 = 0.15      # Wrist 2 水平增益
+        GAIN_Z = 0.1        # Z correction gain: how aggressively to move in Z based on vertical pixel error. .
+        MAX_Z_STEP = 0.06   # cap per-iteration Z movement to 2cm to stay within reachable workspace
 
-        logger.info(f"開始執行 '{object_name}' 的精密笛卡兒對準...")
+        logger.info(f"Starting centering on {object_name} (class ID {object_class_id}) ...")
 
         model = yolo_service.get_model()
         if not realsense_service.is_initialized:
             realsense_service._initialize()
-
-        hand_eye_calibration_service._connect_robot()
-        rtde_r = hand_eye_calibration_service.rtde_r
-        rtde_c = hand_eye_calibration_service.rtde_c
         
         center_u = settings.RS_STREAM_WIDTH // 2
         center_v = settings.RS_STREAM_HEIGHT // 2
@@ -227,7 +225,7 @@ class ObjectDetectionService:
         # Phase 0: Initial Horizontal Orientation vectors.
         # ------------------------------------------------------------------ #
         logger.info("Phase 0: Adjusting the Gripper (Camera) orientation to be parallel with the horizontal plane...")
-        self.adjust_gripper_parallel(rtde_r, rtde_c, max_iterations)
+        self.adjust_gripper_parallel(max_iterations)
 
         # -------------------------------------------------------------------------- #
         # Phase 1: Vertical Alignment (Fix X,Y and orientation vectors, only adjust Z)
@@ -239,6 +237,10 @@ class ObjectDetectionService:
         # TODO: Please fine-tune this value based on the actual grasping situation.
         VERTICAL_OFFSET_PIXELS = -80
         center_v = center_v + VERTICAL_OFFSET_PIXELS
+
+        hand_eye_calibration_service._connect_robot()
+        rtde_r = hand_eye_calibration_service.rtde_r
+        rtde_c = hand_eye_calibration_service.rtde_c
 
         logger.info("[Phase 1] Vertical alignment: Adjusting Z to center object vertically in the image...")
         for i in range(max_iterations):
@@ -256,8 +258,6 @@ class ObjectDetectionService:
             if abs(error_v) < tolerance_pixels:
                 logger.info("Vertical alignment complete within tolerance.")
                 break
-
-            time.sleep(0.5)  # wait to ensure the robot has settled and the camera has updated the image before the next iteration
 
             # get current pose and joints for IK reference
             current_pose = rtde_r.getActualTCPPose() # [x, y, z, rx, ry, rz]
@@ -299,38 +299,79 @@ class ObjectDetectionService:
 
                 rtde_c.moveJ(target_joints, speed=0.5, acceleration=1.0)
                 logger.info(f"Phase 1 Iteration {i+1} moving to pose: {approx_pose} with Z step: {step:.4f}m")
+                # wait to ensure the robot has settled and the camera has updated the image before the next iteration
+                time.sleep(0.2)  
             except Exception as e:
                 logger.error(f"vertical alignment failed with unexpected error: {e}", exc_info=True)
                 break
 
-        # # ------------------------------------------------------------------ #
-        # # Phase 2: Horizontal Alignment (Wrist 2 + Wrist 3)
-        # # ------------------------------------------------------------------ #
-        # logger.info("[Phase 2] 調整水平偏角...")
-        # for i in range(max_iterations):
-        #     color_image, _ = realsense_service.capture_images()
-        #     results = model(color_image, verbose=False)[0]
-        #     best_box = self._get_best_box(results, object_class_id)
+        # ------------------------------------------------------------------ #
+        # Phase 2: Horizontal Alignment (Wrist 2)
+        # ------------------------------------------------------------------ #
+        PROBE_DELTA_W2 = 0.02  # small wrist2 nudge (rad) to measure d(u)/d(wrist2)
+        MAX_W2_STEP = 0.15     # clamp per-iteration wrist2 correction (rad)
 
-        #     if best_box is None: break
+        logger.info("[Phase 2] Horizontal alignment: probing Wrist 2 to determine horizontal pixel sensitivity...")
 
-        #     u, v = self._get_box_center(best_box)
-        #     error_u = u - center_u
-            
-        #     if abs(error_u) < tolerance_pixels:
-        #         break
+        color_image, _ = realsense_service.capture_images()
+        results = model(color_image, verbose=False)[0]
+        best_box = self._get_best_box(results, object_class_id)
 
-        #     current_joints = list(rtde_r.getActualQ())
-        #     u_norm = error_u / center_u
-        #     u_delta = u_norm * GAIN_W2
+        if best_box is None:
+            logger.warning("[Phase 2] Object not found before probe, skipping horizontal alignment.")
+        else:
+            u_before, _ = self._get_box_center(best_box)
+            pre_probe_joints = list(rtde_r.getActualQ())
 
-        #     # 調整 Wrist 2 轉向物體
-        #     current_joints[4] += u_delta
-        #     # Wrist 3 同步補償，保持末端工具（夾爪）相對於物體的旋轉角度不變
-        #     current_joints[5] -= u_delta 
+            probe_joints = pre_probe_joints.copy()
+            probe_joints[4] += PROBE_DELTA_W2
+            rtde_c.moveJ(probe_joints, speed=0.2, acceleration=0.4)
+            time.sleep(0.3)
 
-        #     rtde_c.moveJ(current_joints, speed=0.2, acceleration=0.4)
-        #     time.sleep(0.8)    
+            color_image, _ = realsense_service.capture_images()
+            results = model(color_image, verbose=False)[0]
+            best_box_probe = self._get_best_box(results, object_class_id)
+
+            rtde_c.moveJ(pre_probe_joints, speed=0.2, acceleration=0.4)
+            time.sleep(0.3)
+
+            if best_box_probe is None:
+                logger.warning("[Phase 2] Object lost during probe, skipping horizontal alignment.")
+            else:
+                u_after, _ = self._get_box_center(best_box_probe)
+                du_dw2 = (u_after - u_before) / PROBE_DELTA_W2
+                logger.info(f"[Phase 2] d(u)/d(wrist2) = {du_dw2:.2f} px/rad")
+
+                if abs(du_dw2) < 1e-3:
+                    logger.warning("[Phase 2] Wrist 2 has negligible effect on horizontal pixel position, skipping.")
+                else:
+                    for i in range(max_iterations):
+                        color_image, _ = realsense_service.capture_images()
+                        results = model(color_image, verbose=False)[0]
+                        best_box = self._get_best_box(results, object_class_id)
+
+                        if best_box is None:
+                            logger.warning("[Phase 2] Lost target during horizontal alignment, stopping.")
+                            break
+
+                        u, _ = self._get_box_center(best_box)
+                        error_u = u - center_u
+                        logger.info(f"[Phase 2] Iter {i+1}: u={u}, error_u={error_u} px ({'Left' if error_u < 0 else 'Right'} of center)")
+
+                        if abs(error_u) < tolerance_pixels:
+                            logger.info(f"[Phase 2] Horizontal alignment converged (error={error_u} px) after {i+1} iters.")
+                            break
+
+                        current_joints = list(rtde_r.getActualQ())
+                        w2_delta = float(np.clip(-error_u / du_dw2, -MAX_W2_STEP, MAX_W2_STEP))
+                        logger.info(f"[Phase 2] Iter {i+1}: applying wrist2 delta={np.degrees(w2_delta):.2f}°")
+
+                        current_joints[4] += w2_delta
+
+                        rtde_c.moveJ(current_joints, speed=0.2, acceleration=0.4)
+                        time.sleep(0.2)
+                    else:
+                        logger.warning(f"[Phase 2] Horizontal alignment did not converge within {max_iterations} iterations.")
 
     def grasp_bottle(self):
         """Finds a bottle, centers the gripper over it, and executes a grasp motion sequence."""        
@@ -341,9 +382,10 @@ class ObjectDetectionService:
         _, _, bottle_xyz, _, _, _ = self.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
 
         if bottle_xyz is not None:
+            logger.info(f"Attempting to grasp bottle at base coordinates: {bottle_xyz.tolist()}")
+
             # Ensure the control interface is connected before sending move commands
             hand_eye_calibration_service._connect_robot()
-
             rtde_r = hand_eye_calibration_service.rtde_r
             rtde_c = hand_eye_calibration_service.rtde_c
             if not rtde_r or not rtde_c:
