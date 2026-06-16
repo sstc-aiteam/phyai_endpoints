@@ -1,4 +1,6 @@
+from pathlib import Path
 from pydantic_settings import BaseSettings
+
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "PhyAI Endpoints"
@@ -6,9 +8,17 @@ class Settings(BaseSettings):
     ROBOT_IP: str = "192.168.50.75"
 
     # RealSense camera settings
-    RS_STREAM_WIDTH: int = 640
-    RS_STREAM_HEIGHT: int = 480
-    RS_STREAM_FPS: int = 30
+    # Setting1 - lower resolution and higher FPS for better real-time performance during testing
+    #RS_STREAM_WIDTH: int = 640
+    #RS_STREAM_HEIGHT: int = 480
+    #RS_STREAM_FPS: int = 30
+    # Setting2 - higher resolution and lower FPS for better hand-eye calibration accuracy
+    RS_STREAM_WIDTH: int = 1280
+    RS_STREAM_HEIGHT: int = 720
+    RS_STREAM_FPS: int = 5
+
+    # Directory for saving captured images
+    CAPTURE_DIR: Path = Path(__file__).parents[2] / "captured_images"
 
     # Hand-eye calibration file
     CALIBRATION_FILE: str = "handeye_result.npy"
