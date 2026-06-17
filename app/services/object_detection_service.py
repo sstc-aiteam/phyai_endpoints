@@ -3,6 +3,7 @@ import os
 import cv2
 import logging
 import time
+import math
 
 from app.core.config import settings
 from app.services.realsense import realsense_service, RealSenseError
@@ -14,10 +15,135 @@ from scipy.spatial.transform import Rotation as R
 
 logger = logging.getLogger(__name__)
 
+ROI_X_MIN_RATIO = 0.10
+ROI_X_MAX_RATIO = 0.90
+ROI_Y_MIN_RATIO = 0.10
+ROI_Y_MAX_RATIO = 0.70
+
 class ObjectDetectionError(Exception):
     pass
 
 class ObjectDetectionService:
+    def build_detection_roi(self, image):
+        height, width = image.shape[:2]
+        x1 = int(width * ROI_X_MIN_RATIO)
+        x2 = int(width * ROI_X_MAX_RATIO)
+        y1 = int(height * ROI_Y_MIN_RATIO)
+        y2 = int(height * ROI_Y_MAX_RATIO)
+        return x1, y1, x2, y2
+
+    def draw_detection_roi(self, image):
+        if image is None:
+            return
+
+        roi_x1, roi_y1, roi_x2, roi_y2 = self.build_detection_roi(image)
+        cv2.rectangle(image, (roi_x1, roi_y1), (roi_x2, roi_y2), (255, 255, 255), 1)
+        cv2.putText(
+            image,
+            "ROI",
+            (roi_x1 + 6, max(20, roi_y1 - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+    def draw_view_grid(self, image):
+        if image is None:
+            return
+
+        height, width = image.shape[:2]
+        overlay = image.copy()
+        grid_color = (255, 255, 0)
+        center_color = (0, 255, 255)
+
+        for x in (width // 3, 2 * width // 3):
+            cv2.line(overlay, (x, 0), (x, height), grid_color, 1)
+        for y in (height // 3, 2 * height // 3):
+            cv2.line(overlay, (0, y), (width, y), grid_color, 1)
+
+        cx, cy = width // 2, height // 2
+        cv2.line(overlay, (cx, 0), (cx, height), center_color, 1)
+        cv2.line(overlay, (0, cy), (width, cy), center_color, 1)
+        cv2.circle(overlay, (cx, cy), 5, center_color, -1)
+
+        cv2.addWeighted(overlay, 0.35, image, 0.65, 0, image)
+
+    def calc_yaw_from_bbox_pca(self, image, bbox):
+        if image is None or bbox is None:
+            return None, None
+
+        height, width = image.shape[:2]
+        x1, y1, x2, y2 = map(int, bbox)
+        x1 = max(0, min(x1, width - 1))
+        x2 = max(0, min(x2, width))
+        y1 = max(0, min(y1, height - 1))
+        y2 = max(0, min(y2, height))
+
+        if x2 <= x1 or y2 <= y1:
+            return None, None
+
+        crop = image[y1:y2, x1:x2]
+        if crop.size == 0:
+            return None, None
+
+        crop_h, crop_w = crop.shape[:2]
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blur, 50, 150)
+
+        border = max(3, int(min(crop_w, crop_h) * 0.04))
+        edges[:border, :] = 0
+        edges[-border:, :] = 0
+        edges[:, :border] = 0
+        edges[:, -border:] = 0
+
+        kernel = np.ones((5, 5), np.uint8)
+        edges = cv2.dilate(edges, kernel, iterations=1)
+
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        contours = [
+            c for c in contours
+            if cv2.contourArea(c) > 80 or cv2.arcLength(c, closed=False) > 40
+        ]
+
+        if not contours:
+            return None, None
+
+        pts = np.vstack([c.reshape(-1, 2) for c in contours]).astype(np.float32)
+        pts = pts[
+            (pts[:, 0] >= border) &
+            (pts[:, 0] < crop_w - border) &
+            (pts[:, 1] >= border) &
+            (pts[:, 1] < crop_h - border)
+        ]
+
+        if len(pts) < 20:
+            return None, None
+
+        _mean, eigenvectors, eigenvalues = cv2.PCACompute2(pts, mean=None)
+        if eigenvalues[1][0] == 0:
+            return None, None
+
+        axis_ratio = eigenvalues[0][0] / eigenvalues[1][0]
+        if axis_ratio < 1.4:
+            logger.info(f"Yaw PCA rejected: weak principal axis ratio={axis_ratio:.2f}")
+            return None, None
+
+        vx, vy = eigenvectors[0]
+
+        # Image coordinates: x points right, y points down.
+        # Define vertical up/down as 0 deg, right-leaning as positive, left-leaning as negative.
+        yaw_deg = math.degrees(math.atan2(vx, vy))
+
+        if yaw_deg > 90:
+            yaw_deg -= 180
+        elif yaw_deg < -90:
+            yaw_deg += 180
+
+        return yaw_deg, math.radians(yaw_deg)
+
     def _get_3d_point_from_pixel(self, depth_image, u, v):
         """
         Calculates the depth and 3D point in the camera frame for a given pixel.
@@ -52,7 +178,7 @@ class ObjectDetectionService:
 
     ## 
     # Main method to locate object and calculate its pose in the robot's base frame
-    # param object_class_id: The class ID of the object to detect (e.g., 39 for 'bottle' in COCO), 
+    # param object_class_id: The class ID of the object to detect (e.g., 0 for a single-class bottle model),
     #     see reference: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/cfg/datasets/coco.yaml#L18
     # param object_name: A human-readable name for the object (used for logging and error messages)
     ## 
@@ -78,44 +204,67 @@ class ObjectDetectionService:
 
             # 2. Capture Frames
             color_image, depth_image = realsense_service.capture_images()
+            detection_image = color_image.copy()
             
             # 3. Run Inference
             results = model(color_image, verbose=False)[0]
 
             object_coords = None
             pixel_coords = None
+            bbox = None
+            object_yaw_deg = None
+            object_yaw_rad = None
             depth_in_meters = None
-            depth_gripper2object = None
-            
-            for box in results.boxes:
-                if int(box.cls) == object_class_id:
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    u, v = int((x1 + x2) / 2), int((y1 + y2) / 2)
-                    pixel_coords = [u, v]
+            self.draw_view_grid(detection_image)
+            self.draw_detection_roi(detection_image)
 
-                    # 4. Get Depth and 3D point in camera frame
-                    depth_in_meters, p_cam = self._get_3d_point_from_pixel(depth_image, u, v)
+            for box in self._get_candidate_boxes(results, object_class_id, color_image):
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                candidate_bbox = [int(x1), int(y1), int(x2), int(y2)]
+                u, v = self._get_box_center(box)
 
-                    if p_cam:
-                        # 5. Transform: Camera -> Wrist -> Base
-                        p_cam_homog = np.array(p_cam + [1.0])
+                # 4. Get Depth and 3D point in camera frame
+                candidate_depth, p_cam = self._get_3d_point_from_pixel(depth_image, u, v)
+                if not p_cam:
+                    continue
 
-                        T_wrist_base = np.eye(4)
-                        T_wrist_base[:3, :3] = R_gripper2base
-                        T_wrist_base[:3, 3] = t_gripper2base_vec
-                        
-                        p_base = T_wrist_base @ T_cam_wrist @ p_cam_homog
-                        object_coords = p_base[:3]
-                        
-                        # Draw on the image for the successful detection
-                        cv2.rectangle(color_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-                        cv2.circle(color_image, (u, v), 5, (0, 0, 255), -1)
+                bbox = candidate_bbox
+                pixel_coords = [u, v]
+                depth_in_meters = candidate_depth
+                object_yaw_deg, object_yaw_rad = self.calc_yaw_from_bbox_pca(color_image, bbox)
 
-                        logger.info(f"Found {object_name} at pixel ({u}, {v}) with depth to gripper {depth_in_meters:.3f}m.")
-                        logger.info(f"Calculated base coordinates: {object_coords.tolist()}")
-                        break 
-            
-            return t_gripper2base_vec, arm_joint_info, object_coords, pixel_coords, depth_in_meters, color_image
+                # 5. Transform: Camera -> Wrist -> Base
+                p_cam_homog = np.array(p_cam + [1.0])
+
+                T_wrist_base = np.eye(4)
+                T_wrist_base[:3, :3] = R_gripper2base
+                T_wrist_base[:3, 3] = t_gripper2base_vec
+
+                p_base = T_wrist_base @ T_cam_wrist @ p_cam_homog
+                object_coords = p_base[:3]
+
+                # Draw on the image for the successful detection
+                cv2.rectangle(detection_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+                cv2.circle(detection_image, (u, v), 5, (0, 0, 255), -1)
+                image_h, image_w = detection_image.shape[:2]
+                image_center = (image_w // 2, image_h // 2)
+                dx_pixels = u - image_center[0]
+                dy_pixels = v - image_center[1]
+                cv2.line(detection_image, image_center, (u, v), (0, 255, 255), 2)
+                cv2.putText(detection_image, f"dx:{dx_pixels} dy:{dy_pixels}", (int(x1), min(image_h - 10, int(y2) + 22)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+                if object_yaw_deg is not None:
+                    axis_len = int(max(x2 - x1, y2 - y1) * 0.45)
+                    dx = math.sin(object_yaw_rad) * axis_len
+                    dy = math.cos(object_yaw_rad) * axis_len
+                    cv2.line(detection_image, (int(u - dx), int(v - dy)), (int(u + dx), int(v + dy)), (255, 0, 255), 2)
+                    cv2.putText(detection_image, f"yaw: {object_yaw_deg:.1f} deg", (int(x1), max(20, int(y1) - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+                logger.info(f"Found {object_name} at pixel ({u}, {v}) with depth to gripper {depth_in_meters:.3f}m.")
+                logger.info(f"Estimated {object_name} yaw: {object_yaw_deg} degrees.")
+                logger.info(f"Calculated base coordinates: {object_coords.tolist()}")
+                break
+
+            return t_gripper2base_vec, arm_joint_info, object_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detection_image
 
         except (HandEyeCalibrationError, RealSenseError) as e:
             raise ObjectDetectionError(f"Error during object detection: {e}") from e
@@ -134,12 +283,27 @@ class ObjectDetectionService:
         """
         return [np.pi, 0.0, 0.0]
 
-    def _get_best_box(self, results, object_class_id: int):
-        """Return the first detected box matching class id, or None."""
+    def _get_candidate_boxes(self, results, object_class_id: int, image):
+        """Return matching boxes inside the ROI, ordered by confidence."""
+        roi_x1, roi_y1, roi_x2, roi_y2 = self.build_detection_roi(image)
+        candidates = []
+
         for box in results.boxes:
-            if int(box.cls) == object_class_id:
-                return box
-        return None
+            if int(box.cls) != object_class_id:
+                continue
+
+            u, v = self._get_box_center(box)
+            if roi_x1 <= u <= roi_x2 and roi_y1 <= v <= roi_y2:
+                confidence = float(box.conf) if box.conf is not None else 1.0
+                candidates.append((confidence, box))
+
+        candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+        return [box for _, box in candidates]
+
+    def _get_best_box(self, results, object_class_id: int, image):
+        """Return the highest-confidence matching box inside the ROI, or None."""
+        candidates = self._get_candidate_boxes(results, object_class_id, image)
+        return candidates[0] if candidates else None
 
     def _get_box_center(self, box) -> tuple[int, int]:
         """Return (u, v) pixel center of a YOLO bounding box."""
@@ -239,7 +403,7 @@ class ObjectDetectionService:
         for i in range(max_iterations):
             color_image, _ = realsense_service.capture_images()
             results = model(color_image, verbose=False)[0]
-            best_box = self._get_best_box(results, object_class_id)
+            best_box = self._get_best_box(results, object_class_id, color_image)
 
             if best_box is None:
                 logger.warning("lost target during vertical alignment, stopping Phase 1.")
@@ -318,7 +482,7 @@ class ObjectDetectionService:
 
         color_image, _ = realsense_service.capture_images()
         results = model(color_image, verbose=False)[0]
-        best_box = self._get_best_box(results, object_class_id)
+        best_box = self._get_best_box(results, object_class_id, color_image)
 
         if best_box is None:
             logger.warning("[Phase 2] Object not found before probe, skipping horizontal alignment.")
@@ -333,7 +497,7 @@ class ObjectDetectionService:
 
             color_image, _ = realsense_service.capture_images()
             results = model(color_image, verbose=False)[0]
-            best_box_probe = self._get_best_box(results, object_class_id)
+            best_box_probe = self._get_best_box(results, object_class_id, color_image)
 
             rtde_c.moveJ(pre_probe_joints, speed=0.2, acceleration=0.4)
             time.sleep(0.3)
@@ -351,7 +515,7 @@ class ObjectDetectionService:
                     for i in range(max_iterations):
                         color_image, _ = realsense_service.capture_images()
                         results = model(color_image, verbose=False)[0]
-                        best_box = self._get_best_box(results, object_class_id)
+                        best_box = self._get_best_box(results, object_class_id, color_image)
 
                         if best_box is None:
                             logger.warning("[Phase 2] Lost target during horizontal alignment, stopping.")
@@ -406,8 +570,8 @@ class ObjectDetectionService:
         if not os.path.exists(settings.CALIBRATION_FILE):
             raise ObjectDetectionError(f"Calibration file '{settings.CALIBRATION_FILE}' not found. Please run a hand-eye calibration first.")
 
-        BOTTLE_CLASS_ID = 39 # 'bottle' in COCO dataset
-        _, _, bottle_xyz, _, _, _ = self.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
+        _, _, bottle_xyz, _, _, _, _, _, _ = self.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
 
         if bottle_xyz is not None:
             logger.info(f"Attempting to grasp bottle at base coordinates: {bottle_xyz.tolist()}")

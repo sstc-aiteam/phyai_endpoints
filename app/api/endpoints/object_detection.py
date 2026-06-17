@@ -5,6 +5,7 @@ import base64
 import cv2
 import logging
 
+from app.core.config import settings
 from app.services.object_detection_service import object_detection_service, ObjectDetectionError
 
 router = APIRouter()
@@ -17,6 +18,10 @@ class LocateResponse(BaseModel):
     arm_joint_info: list[float] | None = None
     object_pose_in_base: list[float] | None
     object_pixel_coords: list[int] | None
+    bbox: list[int] | None = None
+    roi_xyxy: list[int] | None = None
+    object_yaw_deg: float | None = None
+    object_yaw_rad: float | None = None
     depth_in_meters: float | None = None
     detection_image_base64: str | None = None
 
@@ -25,7 +30,7 @@ class GraspResponse(BaseModel):
     executed_grasp_pose: list[float] | None
 
 class CenterOnObjectRequest(BaseModel):
-    object_class_id: int = Field(39, description="The class ID of the object to detect (e.g., 39 for 'bottle' in COCO).")
+    object_class_id: int = Field(settings.BOTTLE_CLASS_ID, description="The class ID of the object to detect.")
     object_name: str = Field("bottle", description="A human-readable name for the object.")
     max_iterations: int = Field(5, description="Maximum number of centering iterations.")
     tolerance_pixels: int = Field(10, description="Pixel tolerance for successful centering.")
@@ -45,8 +50,8 @@ def locate_bottle():
     - Calculates the 3D position of the bottle in the robot's base frame using the stored hand-eye calibration.
     """
     try:
-        BOTTLE_CLASS_ID = 39 # 'bottle' in COCO dataset
-        gripper_vec, arm_joint_info, bottle_coords, pixel_coords, depth_in_meters, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
+        gripper_vec, arm_joint_info, bottle_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
 
         b64_image = None
         if detected_image is not None:
@@ -55,6 +60,11 @@ def locate_bottle():
                 b64_image = base64.b64encode(encoded_img).decode('utf-8')
 
         gripper_vec_list = gripper_vec.tolist() if gripper_vec is not None else None
+        roi_xyxy = (
+            list(object_detection_service.build_detection_roi(detected_image))
+            if detected_image is not None
+            else None
+        )
 
         if bottle_coords is not None:
             return {
@@ -63,6 +73,10 @@ def locate_bottle():
                 "arm_joint_info": arm_joint_info,
                 "object_pose_in_base": bottle_coords.tolist(),
                 "object_pixel_coords": pixel_coords,
+                "bbox": bbox,
+                "roi_xyxy": roi_xyxy,
+                "object_yaw_deg": object_yaw_deg,
+                "object_yaw_rad": object_yaw_rad,
                 "depth_in_meters": depth_in_meters,
                 "detection_image_base64": b64_image,
             }
@@ -73,6 +87,10 @@ def locate_bottle():
                 "arm_joint_info": arm_joint_info,
                 "object_pose_in_base": None,
                 "object_pixel_coords": pixel_coords,
+                "bbox": bbox,
+                "roi_xyxy": roi_xyxy,
+                "object_yaw_deg": object_yaw_deg,
+                "object_yaw_rad": object_yaw_rad,
                 "depth_in_meters": depth_in_meters,
                 "detection_image_base64": b64_image,
             }
@@ -82,7 +100,8 @@ def locate_bottle():
     except Exception as e:
         logger.error(f"Unexpected error in /locate-bottle: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
-    
+
+
 @router.post(
     "/locate-bottle-visual",
     summary="Locate a bottle and return a visual detection image",
@@ -101,8 +120,8 @@ def locate_bottle_visual():
     - Returns the captured image with detection results (bounding box and center point) drawn on it.
     """
     try:
-        BOTTLE_CLASS_ID = 39 # 'bottle' in COCO dataset
-        _, _, _, _, _, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
+        _, _, _, _, _, _, _, _, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
 
         if detected_image is None:
             raise HTTPException(status_code=500, detail="Failed to get an image from the camera service.")
@@ -180,3 +199,4 @@ def grasp_bottle():
     except Exception as e:
         logger.error(f"Unexpected error in /grasp-bottle: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
