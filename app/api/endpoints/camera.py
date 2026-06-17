@@ -1,10 +1,13 @@
 import base64
 import cv2
 import numpy as np
+from datetime import datetime
+from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from app.services.realsense import realsense_service
 from app.api.endpoints.schema import CameraCaptureResponse
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -69,6 +72,13 @@ def capture_visual():
         # This turns the grayscale into a "heat map" which is much easier to read, i.e., 
         # blue usually represents "Close to camera" and red represents "Far from camera".
         depth_colormap = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
+
+        # Save the RGB image to disk
+        capture_dir = settings.CAPTURE_DIR
+        capture_dir.mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        save_path = capture_dir / f"rgb_{timestamp}.png"
+        cv2.imwrite(str(save_path), color_image)
 
         # Combine images horizontally
         combined_image = np.hstack((color_image, depth_colormap))
