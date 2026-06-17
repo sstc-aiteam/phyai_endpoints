@@ -1,6 +1,8 @@
 from ultralytics import YOLO
 import logging
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
 class YoloService:
@@ -14,10 +16,9 @@ class YoloService:
 
     def _load_model(self):
         if self._model is None:
-            logger.info("Loading YOLOv8n model...")
-            # 'yolov8n.pt' is the Nano model (fastest).
-            self._model = YOLO('yolov8n.pt')
-            logger.info("✅ YOLOv8n model loaded.")
+            logger.info(f"Loading YOLO model from {settings.YOLO_MODEL_PATH}...")
+            self._model = YOLO(settings.YOLO_MODEL_PATH)
+            logger.info("✅ YOLO model loaded.")
 
     def get_model(self):
         self._load_model()
