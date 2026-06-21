@@ -8,7 +8,7 @@ import math
 from app.core.config import settings
 from app.services.realsense import realsense_service, RealSenseError
 from app.services.hand_eye_calibration import hand_eye_calibration_service, HandEyeCalibrationError
-from app.services.yolo_service import yolo_service
+from app.services.yolo_service import yolo_service, best_yolo_service
 from app.services.gripper.robotiq_gripper_control import RobotiqGripper
 
 from scipy.spatial.transform import Rotation as R
@@ -182,7 +182,7 @@ class ObjectDetectionService:
     #     see reference: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/cfg/datasets/coco.yaml#L18
     # param object_name: A human-readable name for the object (used for logging and error messages)
     ## 
-    def locate_object_in_base(self, object_class_id: int, object_name: str):
+    def locate_object_in_base(self, object_class_id: int, object_name: str, model=None):
         """
         Locates a specified object using YOLO and calculates its pose in the robot's base frame.
         """
@@ -191,7 +191,8 @@ class ObjectDetectionService:
 
         try:
             # 1. Get services ready
-            model = yolo_service.get_model()
+            if model is None:
+                model = yolo_service.get_model()
             T_cam_wrist = np.load(settings.CALIBRATION_FILE)
             
             # Get robot pose (this will also connect to the robot's receive interface if needed)

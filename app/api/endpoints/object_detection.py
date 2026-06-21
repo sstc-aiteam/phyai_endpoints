@@ -7,6 +7,7 @@ import logging
 
 from app.core.config import settings
 from app.services.object_detection_service import object_detection_service, ObjectDetectionError
+from app.services.yolo_service import best_yolo_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -28,6 +29,14 @@ class LocateResponse(BaseModel):
 class GraspResponse(BaseModel):
     message: str
     executed_grasp_pose: list[float] | None
+
+BEST_CLASS_NAMES = [
+    'ac_remotecontrol', 'bottle_alcohol_spray', 'cotton_swab', 'cotton_swabs_pp',
+    'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb',
+]
+
+class LocateObjectRequest(BaseModel):
+    object_name: str = Field(..., description=f"Name of object to detect. Valid values: {BEST_CLASS_NAMES}")
 
 class CenterOnObjectRequest(BaseModel):
     object_class_id: int = Field(settings.BOTTLE_CLASS_ID, description="The class ID of the object to detect.")
@@ -173,6 +182,62 @@ def center_on_object(req: CenterOnObjectRequest):
         logger.error(f"Unexpected error in /center-on-object: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
+
+
+@router.post("/locate-object", response_model=LocateResponse, summary="Locate a specific object using best.pt and return its pose")
+def locate_object(req: LocateObjectRequest):
+    """
+    - Accepts an `object_name` from: `['ac_remotecontrol', 'bottle_alcohol_spray', 'cotton_swab', 'cotton_swabs_pp', 'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb']`
+    - Captures an image from the RealSense camera.
+    - Uses the `best.pt` YOLOv8n model to detect the requested object.
+    - Calculates the 3D position in the robot's base frame using the stored hand-eye calibration.
+    """
+    if req.object_name not in BEST_CLASS_NAMES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid object_name '{req.object_name}'. Valid values: {BEST_CLASS_NAMES}",
+        )
+
+    class_id = BEST_CLASS_NAMES.index(req.object_name)
+    model = best_yolo_service.get_model()
+
+    try:
+        gripper_vec, arm_joint_info, obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image = \
+            object_detection_service.locate_object_in_base(class_id, req.object_name, model=model)
+
+        b64_image = None
+        if detected_image is not None:
+            success, encoded_img = cv2.imencode('.png', detected_image)
+            if success:
+                b64_image = base64.b64encode(encoded_img).decode('utf-8')
+
+        gripper_vec_list = gripper_vec.tolist() if gripper_vec is not None else None
+        roi_xyxy = (
+            list(object_detection_service.build_detection_roi(detected_image))
+            if detected_image is not None
+            else None
+        )
+
+        detected = obj_coords is not None
+        return {
+            "message": f"'{req.object_name}' located successfully." if detected else f"'{req.object_name}' not detected in the current view.",
+            "gripper_translation_vector": gripper_vec_list,
+            "arm_joint_info": arm_joint_info,
+            "object_pose_in_base": obj_coords.tolist() if detected else None,
+            "object_pixel_coords": pixel_coords,
+            "bbox": bbox,
+            "roi_xyxy": roi_xyxy,
+            "object_yaw_deg": object_yaw_deg,
+            "object_yaw_rad": object_yaw_rad,
+            "depth_in_meters": depth_in_meters,
+            "detection_image_base64": b64_image,
+        }
+    except ObjectDetectionError as e:
+        logger.error(f"Failed to locate object: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /locate-object: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
 @router.post("/grasp-bottle", response_model=GraspResponse, summary="Detect a bottle and execute a grasp motion")
