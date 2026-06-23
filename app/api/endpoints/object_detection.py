@@ -200,7 +200,7 @@ def locate_ward_item(req: LocateWardItemRequest):
     """
     - Accepts an `object_name` from: `['ac_remotecontrol', 'bottle_alcohol_spray', 'cotton_swab', 'cotton_swabs_pp', 'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb']`
     - Captures an image from the RealSense camera.
-    - Uses the `best.pt` YOLOv26n model to detect the requested ward item.
+    - Uses the `ward_item.pt` YOLOv26n model to detect the requested ward item.
     - Calculates the 3D position in the robot's base frame using the stored hand-eye calibration.
     """
     if req.object_name not in BEST_CLASS_NAMES:
@@ -255,7 +255,7 @@ def locate_ward_item(req: LocateWardItemRequest):
 def detect_all_ward_items():
     """
     - Captures an image from the RealSense camera.
-    - Uses the `best.pt` YOLOv26n model to detect all ward item classes.
+    - Uses the `ward_item.pt` YOLOv26n model to detect all ward item classes.
     - Returns all detected classes, bounding boxes, and an annotated image (base64-encoded PNG).
     """
     try:
@@ -314,7 +314,7 @@ def detect_all_ward_items():
 def detect_all_ward_items_visual():
     """
     - Captures an image from the RealSense camera.
-    - Uses the `best.pt` YOLOv26n model to detect all ward item classes.
+    - Uses the `ward_item.pt` YOLOv26n model to detect all ward item classes.
     - Returns the captured image with bounding boxes and labels drawn on it.
     """
     try:
