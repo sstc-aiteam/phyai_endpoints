@@ -8,6 +8,7 @@ import logging
 from app.core.config import settings
 from app.services.object_detection_service import object_detection_service, ObjectDetectionError
 from app.services.yolo_service import best_yolo_service
+from app.services.realsense import realsense_service, RealSenseError
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -35,8 +36,8 @@ BEST_CLASS_NAMES = [
     'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb',
 ]
 
-class LocateObjectRequest(BaseModel):
-    object_name: str = Field(..., description=f"Name of object to detect. Valid values: {BEST_CLASS_NAMES}")
+class LocateWardItemRequest(BaseModel):
+    object_name: str = Field(..., description=f"Name of ward item to detect. Valid values: {BEST_CLASS_NAMES}")
 
 class CenterOnObjectRequest(BaseModel):
     object_class_id: int = Field(settings.BOTTLE_CLASS_ID, description="The class ID of the object to detect.")
@@ -47,6 +48,16 @@ class CenterOnObjectRequest(BaseModel):
 class CenterOnObjectResponse(BaseModel):
     message: str
     object_pose_in_base: list[float] | None = None
+
+class DetectedWardItem(BaseModel):
+    class_name: str
+    bbox: list[int]
+    confidence: float
+
+class DetectAllWardItemsResponse(BaseModel):
+    message: str
+    detected_items: list[DetectedWardItem]
+    detection_image_base64: str | None = None
 
 
 
@@ -184,12 +195,12 @@ def center_on_object(req: CenterOnObjectRequest):
 
 
 
-@router.post("/locate-object", response_model=LocateResponse, summary="Locate a specific object using best.pt and return its pose")
-def locate_object(req: LocateObjectRequest):
+@router.post("/locate-ward-item", response_model=LocateResponse, summary="Locate a specific ward item using best.pt and return its pose")
+def locate_ward_item(req: LocateWardItemRequest):
     """
     - Accepts an `object_name` from: `['ac_remotecontrol', 'bottle_alcohol_spray', 'cotton_swab', 'cotton_swabs_pp', 'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb']`
     - Captures an image from the RealSense camera.
-    - Uses the `best.pt` YOLOv8n model to detect the requested object.
+    - Uses the `best.pt` YOLOv8n model to detect the requested ward item.
     - Calculates the 3D position in the robot's base frame using the stored hand-eye calibration.
     """
     if req.object_name not in BEST_CLASS_NAMES:
@@ -233,10 +244,59 @@ def locate_object(req: LocateObjectRequest):
             "detection_image_base64": b64_image,
         }
     except ObjectDetectionError as e:
-        logger.error(f"Failed to locate object: {e}", exc_info=True)
+        logger.error(f"Failed to locate ward item: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected error in /locate-object: {e}", exc_info=True)
+        logger.error(f"Unexpected error in /locate-ward-item: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+@router.post("/detect-all-ward-items", response_model=DetectAllWardItemsResponse, summary="Detect all ward items in the current camera view")
+def detect_all_ward_items():
+    """
+    - Captures an image from the RealSense camera.
+    - Uses the `best.pt` YOLOv8n model to detect all ward item classes.
+    - Returns all detected classes, bounding boxes, and an annotated image (base64-encoded PNG).
+    """
+    try:
+        if not realsense_service.is_initialized:
+            realsense_service._initialize()
+
+        color_image, _ = realsense_service.capture_images()
+        model = best_yolo_service.get_model()
+        results = model(color_image, verbose=False)[0]
+
+        detection_image = color_image.copy()
+        detected_items: list[DetectedWardItem] = []
+
+        for box in results.boxes:
+            cls_id = int(box.cls[0].item())
+            if cls_id < 0 or cls_id >= len(BEST_CLASS_NAMES):
+                continue
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            bbox = [int(x1), int(y1), int(x2), int(y2)]
+            conf = float(box.conf[0].item())
+            class_name = BEST_CLASS_NAMES[cls_id]
+
+            detected_items.append(DetectedWardItem(class_name=class_name, bbox=bbox, confidence=round(conf, 4)))
+
+            cv2.rectangle(detection_image, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
+            label = f"{class_name} {conf:.2f}"
+            cv2.putText(detection_image, label, (bbox[0], max(bbox[1] - 8, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+        b64_image = None
+        success, encoded_img = cv2.imencode('.png', detection_image)
+        if success:
+            b64_image = base64.b64encode(encoded_img).decode('utf-8')
+
+        msg = f"Detected {len(detected_items)} ward item(s)." if detected_items else "No ward items detected in the current view."
+        return DetectAllWardItemsResponse(message=msg, detected_items=detected_items, detection_image_base64=b64_image)
+
+    except RealSenseError as e:
+        logger.error(f"Camera error in /detect-all-ward-items: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Camera error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error in /detect-all-ward-items: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
