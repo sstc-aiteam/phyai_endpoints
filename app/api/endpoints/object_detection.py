@@ -200,7 +200,7 @@ def locate_ward_item(req: LocateWardItemRequest):
     """
     - Accepts an `object_name` from: `['ac_remotecontrol', 'bottle_alcohol_spray', 'cotton_swab', 'cotton_swabs_pp', 'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb']`
     - Captures an image from the RealSense camera.
-    - Uses the `best.pt` YOLOv8n model to detect the requested ward item.
+    - Uses the `best.pt` YOLOv26n model to detect the requested ward item.
     - Calculates the 3D position in the robot's base frame using the stored hand-eye calibration.
     """
     if req.object_name not in BEST_CLASS_NAMES:
@@ -255,7 +255,7 @@ def locate_ward_item(req: LocateWardItemRequest):
 def detect_all_ward_items():
     """
     - Captures an image from the RealSense camera.
-    - Uses the `best.pt` YOLOv8n model to detect all ward item classes.
+    - Uses the `best.pt` YOLOv26n model to detect all ward item classes.
     - Returns all detected classes, bounding boxes, and an annotated image (base64-encoded PNG).
     """
     try:
@@ -297,6 +297,60 @@ def detect_all_ward_items():
         raise HTTPException(status_code=503, detail=f"Camera error: {str(e)}")
     except Exception as e:
         logger.error(f"Unexpected error in /detect-all-ward-items: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+@router.post(
+    "/detect-all-ward-items-visual",
+    summary="Detect all ward items and return a visual detection image",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Returns the camera image with all detected ward items drawn on it.",
+        }
+    },
+)
+def detect_all_ward_items_visual():
+    """
+    - Captures an image from the RealSense camera.
+    - Uses the `best.pt` YOLOv26n model to detect all ward item classes.
+    - Returns the captured image with bounding boxes and labels drawn on it.
+    """
+    try:
+        if not realsense_service.is_initialized:
+            realsense_service._initialize()
+
+        color_image, _ = realsense_service.capture_images()
+        model = best_yolo_service.get_model()
+        results = model(color_image, verbose=False)[0]
+
+        detection_image = color_image.copy()
+
+        for box in results.boxes:
+            cls_id = int(box.cls[0].item())
+            if cls_id < 0 or cls_id >= len(BEST_CLASS_NAMES):
+                continue
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            bbox = [int(x1), int(y1), int(x2), int(y2)]
+            conf = float(box.conf[0].item())
+            class_name = BEST_CLASS_NAMES[cls_id]
+
+            cv2.rectangle(detection_image, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
+            label = f"{class_name} {conf:.2f}"
+            cv2.putText(detection_image, label, (bbox[0], max(bbox[1] - 8, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+        success, encoded_img = cv2.imencode('.png', detection_image)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to encode image to PNG")
+
+        return Response(content=encoded_img.tobytes(), media_type="image/png")
+
+    except RealSenseError as e:
+        logger.error(f"Camera error in /detect-all-ward-items-visual: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Camera error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error in /detect-all-ward-items-visual: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
