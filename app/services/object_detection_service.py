@@ -203,8 +203,8 @@ class ObjectDetectionService:
                 realsense_service._initialize()
 
             # 2. Capture Frames
-            if color_image is None or depth_image is None:
-                color_image, depth_image = realsense_service.capture_images()
+            color_image, depth_image = realsense_service.capture_images()
+
             detection_image = color_image.copy()
             
             # 3. Run Inference
