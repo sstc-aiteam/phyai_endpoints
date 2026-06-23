@@ -26,9 +26,10 @@ class Settings(BaseSettings):
     CALIBRATION_FILE: str = str(PROJECT_ROOT / "handeye_result.npy")
 
     # Object detection model settings
-    YOLO_MODEL_PATH: str = str(PROJECT_ROOT / "bottle.pt")
+    BOTTLE_YOLO_MODEL_PATH: str = str(PROJECT_ROOT / "bottle.pt")
     BOTTLE_CLASS_ID: int = 0
-    BEST_MODEL_PATH: str = str(PROJECT_ROOT / "best.pt")
+    
+    WARD_ITEM_YOLO_MODEL_PATH: str = str(PROJECT_ROOT / "best.pt")
 
     # Distance from TCP (wrist3) offset for the gripper length along the camera's forward axis
     GRIPPER_LEN_OFFSET_IN_METERS: float = 0.15

@@ -8,7 +8,7 @@ import math
 from app.core.config import settings
 from app.services.realsense import realsense_service, RealSenseError
 from app.services.hand_eye_calibration import hand_eye_calibration_service, HandEyeCalibrationError
-from app.services.yolo_service import yolo_service, best_yolo_service
+from app.services.yolo_service import bottle_yolo_service, ward_item_yolo_service
 from app.services.gripper.robotiq_gripper_control import RobotiqGripper
 
 from scipy.spatial.transform import Rotation as R
@@ -192,7 +192,7 @@ class ObjectDetectionService:
         try:
             # 1. Get services ready
             if model is None:
-                model = yolo_service.get_model()
+                model = bottle_yolo_service.get_model()
             T_cam_wrist = np.load(settings.CALIBRATION_FILE)
             
             # Get robot pose (this will also connect to the robot's receive interface if needed)
@@ -392,7 +392,7 @@ class ObjectDetectionService:
         center_v = settings.RS_STREAM_HEIGHT // 2        
         center_v = center_v + VERTICAL_OFFSET_PIXELS
 
-        model = yolo_service.get_model()
+        model = bottle_yolo_service.get_model()
         if not realsense_service.is_initialized:
             realsense_service._initialize()
 
@@ -477,7 +477,7 @@ class ObjectDetectionService:
         rtde_r = hand_eye_calibration_service.rtde_r
         rtde_c = hand_eye_calibration_service.rtde_c
 
-        model = yolo_service.get_model()
+        model = bottle_yolo_service.get_model()
         if not realsense_service.is_initialized:
             realsense_service._initialize()
 
@@ -544,7 +544,7 @@ class ObjectDetectionService:
     def center_on_object(self, object_class_id: int, object_name: str, max_iterations=10, tolerance_pixels=10):
         logger.info(f"Starting centering on {object_name} (class ID {object_class_id}) ...")
 
-        model = yolo_service.get_model()
+        model = bottle_yolo_service.get_model()
         if not realsense_service.is_initialized:
             realsense_service._initialize()
 

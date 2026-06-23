@@ -7,7 +7,7 @@ import logging
 
 from app.core.config import settings
 from app.services.object_detection_service import object_detection_service, ObjectDetectionError
-from app.services.yolo_service import best_yolo_service
+from app.services.yolo_service import ward_item_yolo_service
 from app.services.realsense import realsense_service, RealSenseError
 
 router = APIRouter()
@@ -210,7 +210,7 @@ def locate_ward_item(req: LocateWardItemRequest):
         )
 
     class_id = BEST_CLASS_NAMES.index(req.object_name)
-    model = best_yolo_service.get_model()
+    model = ward_item_yolo_service.get_model()
 
     try:
         gripper_vec, arm_joint_info, obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image = \
@@ -263,7 +263,7 @@ def detect_all_ward_items():
             realsense_service._initialize()
 
         color_image, _ = realsense_service.capture_images()
-        model = best_yolo_service.get_model()
+        model = ward_item_yolo_service.get_model()
         results = model(color_image, verbose=False)[0]
 
         detection_image = color_image.copy()
@@ -322,7 +322,7 @@ def detect_all_ward_items_visual():
             realsense_service._initialize()
 
         color_image, _ = realsense_service.capture_images()
-        model = best_yolo_service.get_model()
+        model = ward_item_yolo_service.get_model()
         results = model(color_image, verbose=False)[0]
 
         detection_image = color_image.copy()
