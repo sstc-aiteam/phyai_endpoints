@@ -182,7 +182,7 @@ class ObjectDetectionService:
     #     see reference: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/cfg/datasets/coco.yaml#L18
     # param object_name: A human-readable name for the object (used for logging and error messages)
     ## 
-    def locate_object_in_base(self, object_class_id: int, object_name: str):
+    def locate_object_in_base(self, object_class_id: int, object_name: str, color_image=None, depth_image=None):
         """
         Locates a specified object using YOLO and calculates its pose in the robot's base frame.
         """
@@ -203,7 +203,8 @@ class ObjectDetectionService:
                 realsense_service._initialize()
 
             # 2. Capture Frames
-            color_image, depth_image = realsense_service.capture_images()
+            if color_image is None or depth_image is None:
+                color_image, depth_image = realsense_service.capture_images()
             detection_image = color_image.copy()
             
             # 3. Run Inference

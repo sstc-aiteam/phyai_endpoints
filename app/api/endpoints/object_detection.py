@@ -1,12 +1,16 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from fastapi.responses import Response
 import base64
 import cv2
 import logging
+import numpy as np
+from datetime import datetime
 
 from app.core.config import settings
 from app.services.object_detection_service import object_detection_service, ObjectDetectionError
+from app.services.pointcloud import encode_binary_ply
+from app.services.realsense import realsense_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -138,6 +142,155 @@ def locate_bottle_visual():
         logger.error(f"Unexpected error in /locate-bottle-visual: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
+@router.post(
+    "/locate-bottle-pointcloud",
+    summary="Locate a bottle and return its bbox point cloud",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/octet-stream": {}},
+            "description": "Returns the detected bottle bbox as a colored binary little-endian PLY point cloud.",
+        }
+    },
+)
+def locate_bottle_pointcloud(
+    depth_margin_m: float | None = Query(
+        0.08,
+        description="Keep only points within +/- this many meters from the detected center depth. Set to 0 to keep the full bbox.",
+    ),
+):
+    """
+    Detects the bottle bbox, then returns the same frame's RealSense point cloud cropped to that
+    bbox and filtered by the bottle depth.
+    """
+    try:
+        BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
+        color_frame, depth_frame = realsense_service.capture_aligned_frames()
+        color_image = np.asanyarray(color_frame.get_data())
+        depth_image = np.asanyarray(depth_frame.get_data())
+
+        _, _, bottle_coords, _, bbox, _, _, depth_in_meters, _ = object_detection_service.locate_object_in_base(
+            BOTTLE_CLASS_ID,
+            "bottle",
+            color_image=color_image,
+            depth_image=depth_image,
+        )
+        if bottle_coords is None or bbox is None:
+            raise HTTPException(status_code=404, detail="Bottle not detected in the current view.")
+
+        vertices, colors = realsense_service.point_cloud_from_frames(
+            color_frame,
+            depth_frame,
+            bbox=bbox,
+            depth_center_m=depth_in_meters,
+            depth_margin_m=None if depth_margin_m == 0 else depth_margin_m,
+        )
+        if len(vertices) == 0:
+            raise HTTPException(status_code=500, detail=f"Detected bbox has no valid depth points: {bbox}")
+
+        ply_bytes = encode_binary_ply(vertices, colors)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"bottle_pointcloud_{timestamp}.ply"
+
+        return Response(
+            content=ply_bytes,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-PointCloud-BBox": ",".join(map(str, bbox)),
+                "X-PointCloud-Depth-Meters": f"{depth_in_meters:.6f}",
+                "X-PointCloud-Depth-Margin-Meters": "" if depth_margin_m is None else f"{depth_margin_m:.6f}",
+            },
+        )
+    except HTTPException:
+        raise
+    except ObjectDetectionError as e:
+        logger.error(f"Failed to locate bottle point cloud: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /locate-bottle-pointcloud: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+@router.post(
+    "/locate-bottle-pointcloud-visual",
+    summary="Preview the dynamic bottle bbox/depth mask used for point cloud",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Returns a PNG preview of the detected bbox and depth mask used for point cloud generation.",
+        }
+    },
+)
+def locate_bottle_pointcloud_visual(
+    depth_margin_m: float = Query(
+        0.08,
+        description="Show points within +/- this many meters from the detected center depth.",
+    ),
+):
+    """
+    Shows the dynamic detection bbox and depth-filtered pixels that would become the bottle point cloud.
+    """
+    try:
+        BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
+        color_frame, depth_frame = realsense_service.capture_aligned_frames()
+        color_image = np.asanyarray(color_frame.get_data())
+        depth_image = np.asanyarray(depth_frame.get_data())
+
+        _, _, bottle_coords, _, bbox, _, _, depth_in_meters, _ = object_detection_service.locate_object_in_base(
+            BOTTLE_CLASS_ID,
+            "bottle",
+            color_image=color_image,
+            depth_image=depth_image,
+        )
+        if bottle_coords is None or bbox is None:
+            raise HTTPException(status_code=404, detail="Bottle not detected in the current view.")
+
+        height, width = depth_image.shape[:2]
+        x1, y1, x2, y2 = map(int, bbox)
+        x1 = max(0, min(x1, width - 1))
+        x2 = max(0, min(x2, width))
+        y1 = max(0, min(y1, height - 1))
+        y2 = max(0, min(y2, height))
+
+        depth_m = depth_image.astype(np.float32) * realsense_service.depth_scale
+        mask = np.zeros((height, width), dtype=bool)
+        mask[y1:y2, x1:x2] = (
+            (depth_m[y1:y2, x1:x2] > 0)
+            & (depth_m[y1:y2, x1:x2] >= max(0.0, depth_in_meters - depth_margin_m))
+            & (depth_m[y1:y2, x1:x2] <= depth_in_meters + depth_margin_m)
+        )
+
+        preview = color_image.copy()
+        overlay = preview.copy()
+        overlay[mask] = (0, 255, 0)
+        cv2.addWeighted(overlay, 0.45, preview, 0.55, 0, preview)
+        cv2.rectangle(preview, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(
+            preview,
+            f"depth {depth_in_meters:.3f}m +/- {depth_margin_m:.3f}m",
+            (x1, max(20, y1 - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+
+        success, encoded_img = cv2.imencode(".png", preview)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to encode mask preview to PNG")
+
+        return Response(content=encoded_img.tobytes(), media_type="image/png")
+    except HTTPException:
+        raise
+    except ObjectDetectionError as e:
+        logger.error(f"Failed to locate bottle point cloud visual: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /locate-bottle-pointcloud-visual: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
 
 @router.post("/center-on-object", response_model=CenterOnObjectResponse, summary="Center the robot gripper over a detected object")
 def center_on_object(req: CenterOnObjectRequest):
@@ -199,4 +352,3 @@ def grasp_bottle():
     except Exception as e:
         logger.error(f"Unexpected error in /grasp-bottle: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
-
