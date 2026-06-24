@@ -35,6 +35,7 @@ class RealSenseService:
             cls._instance.depth_intrinsics = None
             cls._instance.color_intrinsics = None
             cls._instance.depth_scale = None
+            cls._instance.pointcloud = None
         return cls._instance
 
     def _initialize(self):
@@ -50,6 +51,7 @@ class RealSenseService:
             config = rs.config()
             # Create hole filling filter with mode 2 (nearest from around)
             self.hole_filling = rs.hole_filling_filter(2)
+            self.pointcloud = rs.pointcloud()
             
             # 1. Check for device connection
             context = rs.context()
@@ -92,15 +94,14 @@ class RealSenseService:
             
             raise RealSenseError(f"Failed to start RealSense pipeline: {e}") from e
 
-    def capture_images(self, use_hole_filling: bool = False):
+    def _capture_aligned_frames(self, use_hole_filling: bool = False):
         """
-        Captures and aligns one pair of color and depth frames.
-        Will attempt to re-initialize the device if not connected.
+        Captures and aligns one pair of color and depth frames, returning RealSense frame objects.
 
         Args:
             use_hole_filling (bool): If True, applies a hole-filling filter to the depth frame. Defaults to False.
         Returns: 
-            A tuple containing (color_image, depth_image). Depth values are raw depth units.
+            A tuple containing (color_frame, depth_frame).
         """
         try:
             # 1. Check/Re-initialize device if not ready       
@@ -130,15 +131,115 @@ class RealSenseService:
             if use_hole_filling:
                 depth_frame = self.hole_filling.process(depth_frame)
 
-            depth_image = np.asanyarray(depth_frame.get_data())
-            color_image = np.asanyarray(color_frame.get_data())
-            
-            return color_image, depth_image
+            return color_frame, depth_frame
 
         except RuntimeError as e:
             # This handles errors during frame capture (e.g., device unplugged mid-run)
             logging.error(f"RealSense runtime error during capture: {e}. Device is now considered uninitialized.", exc_info=True)
             raise RealSenseError(f"Error with RealSense camera: {e}") from e
+
+    def capture_aligned_frames(self, use_hole_filling: bool = False):
+        """
+        Captures and aligns one pair of color and depth frames, returning RealSense frame objects.
+        """
+        return self._capture_aligned_frames(use_hole_filling=use_hole_filling)
+
+    def capture_images(self, use_hole_filling: bool = False):
+        """
+        Captures and aligns one pair of color and depth frames.
+        Will attempt to re-initialize the device if not connected.
+
+        Args:
+            use_hole_filling (bool): If True, applies a hole-filling filter to the depth frame. Defaults to False.
+        Returns:
+            A tuple containing (color_image, depth_image). Depth values are raw depth units.
+        """
+        color_frame, depth_frame = self._capture_aligned_frames(use_hole_filling=use_hole_filling)
+        depth_image = np.asanyarray(depth_frame.get_data())
+        color_image = np.asanyarray(color_frame.get_data())
+
+        return color_image, depth_image
+
+    def point_cloud_from_frames(
+        self,
+        color_frame,
+        depth_frame,
+        bbox: list[int] | None = None,
+        depth_center_m: float | None = None,
+        depth_margin_m: float | None = None,
+    ):
+        """
+        Converts aligned RealSense color/depth frames to a colored point cloud.
+
+        Args:
+            bbox (list[int] | None): Optional [x1, y1, x2, y2] pixel crop in the aligned
+                color/depth image. x2 and y2 are treated as exclusive bounds.
+            depth_center_m (float | None): Optional object center depth in meters.
+            depth_margin_m (float | None): Optional +/- meter range around depth_center_m.
+
+        Returns:
+            A tuple containing (vertices, colors), where vertices are Nx3 float32 meters in
+            camera coordinates and colors are Nx3 uint8 RGB values.
+        """
+        self.pointcloud.map_to(color_frame)
+        points = self.pointcloud.calculate(depth_frame)
+
+        vertices = np.asanyarray(points.get_vertices()).view(np.float32).reshape(-1, 3)
+        color_image = np.asanyarray(color_frame.get_data())
+        colors = color_image.reshape(-1, 3)[:, ::-1]
+
+        valid = np.isfinite(vertices).all(axis=1) & (vertices[:, 2] > 0)
+        if bbox is not None:
+            height, width = color_image.shape[:2]
+            x1, y1, x2, y2 = map(int, bbox)
+            x1 = max(0, min(x1, width - 1))
+            x2 = max(0, min(x2, width))
+            y1 = max(0, min(y1, height - 1))
+            y2 = max(0, min(y2, height))
+
+            if x2 <= x1 or y2 <= y1:
+                raise RealSenseError(f"Invalid point cloud bbox after clipping: {[x1, y1, x2, y2]}")
+
+            bbox_mask_2d = np.zeros((height, width), dtype=bool)
+            bbox_mask_2d[y1:y2, x1:x2] = True
+            valid &= bbox_mask_2d.reshape(-1)
+
+        if depth_center_m is not None and depth_margin_m is not None and depth_margin_m > 0:
+            depth_min = max(0.0, depth_center_m - depth_margin_m)
+            depth_max = depth_center_m + depth_margin_m
+            valid &= (vertices[:, 2] >= depth_min) & (vertices[:, 2] <= depth_max)
+
+        return vertices[valid], colors[valid]
+
+    def capture_point_cloud(
+        self,
+        use_hole_filling: bool = False,
+        bbox: list[int] | None = None,
+        depth_center_m: float | None = None,
+        depth_margin_m: float | None = None,
+    ):
+        """
+        Captures aligned frames and converts the RealSense depth frame to a colored point cloud.
+
+        Args:
+            use_hole_filling (bool): If True, applies a hole-filling filter to the depth frame.
+            bbox (list[int] | None): Optional [x1, y1, x2, y2] pixel crop in the aligned
+                color/depth image. x2 and y2 are treated as exclusive bounds.
+            depth_center_m (float | None): Optional object center depth in meters.
+            depth_margin_m (float | None): Optional +/- meter range around depth_center_m.
+
+        Returns:
+            A tuple containing (vertices, colors), where vertices are Nx3 float32 meters in
+            camera coordinates and colors are Nx3 uint8 RGB values.
+        """
+        color_frame, depth_frame = self._capture_aligned_frames(use_hole_filling=use_hole_filling)
+        return self.point_cloud_from_frames(
+            color_frame,
+            depth_frame,
+            bbox=bbox,
+            depth_center_m=depth_center_m,
+            depth_margin_m=depth_margin_m,
+        )
 
     def deproject_pixel_to_point(self, pixel: list[int], depth: float) -> list[float]:
         """
@@ -174,6 +275,7 @@ class RealSenseService:
                 self.depth_intrinsics = None
                 self.color_intrinsics = None
                 self.depth_scale = None
+                self.pointcloud = None
         else:
             logger.info("RealSense pipeline was not active/initialized, nothing to stop.")
 

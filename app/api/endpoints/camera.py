@@ -3,9 +3,10 @@ import cv2
 import numpy as np
 from datetime import datetime
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 from app.services.realsense import realsense_service
+from app.services.pointcloud import encode_binary_ply
 from app.api.endpoints.schema import CameraCaptureResponse
 from app.core.config import settings
 
@@ -92,3 +93,56 @@ def capture_visual():
         return Response(content=encoded_img.tobytes(), media_type="image/png")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to capture image: {str(e)}")
+
+@router.get(
+    "/capture_pointcloud",
+    summary="Capture and return a colored point cloud from RealSense depth",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/octet-stream": {}},
+            "description": "Return a colored point cloud as a binary little-endian PLY file.",
+        }
+    },
+)
+def capture_pointcloud(
+    use_hole_filling: bool = Query(False, description="Apply RealSense hole-filling before point cloud generation."),
+    x1: int | None = Query(None, description="Optional bbox left pixel."),
+    y1: int | None = Query(None, description="Optional bbox top pixel."),
+    x2: int | None = Query(None, description="Optional bbox right pixel."),
+    y2: int | None = Query(None, description="Optional bbox bottom pixel."),
+    depth_center_m: float | None = Query(None, description="Optional center depth in meters for filtering bbox points."),
+    depth_margin_m: float | None = Query(None, description="Optional +/- meter range around depth_center_m."),
+):
+    """
+    Captures aligned RGB and Depth frames, converts depth to a colored point cloud using
+    pyrealsense2 pointcloud, and returns it as a binary PLY file.
+    """
+    try:
+        bbox_values = [x1, y1, x2, y2]
+        if any(value is not None for value in bbox_values) and not all(value is not None for value in bbox_values):
+            raise HTTPException(status_code=400, detail="Provide all bbox values: x1, y1, x2, y2.")
+
+        bbox = [x1, y1, x2, y2] if all(value is not None for value in bbox_values) else None
+        vertices, colors = realsense_service.capture_point_cloud(
+            use_hole_filling=use_hole_filling,
+            bbox=bbox,
+            depth_center_m=depth_center_m,
+            depth_margin_m=depth_margin_m,
+        )
+        if len(vertices) == 0:
+            raise HTTPException(status_code=500, detail="Captured point cloud has no valid depth points.")
+
+        ply_bytes = encode_binary_ply(vertices, colors)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"pointcloud_{timestamp}.ply"
+
+        return Response(
+            content=ply_bytes,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to capture point cloud: {str(e)}")
