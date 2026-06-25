@@ -15,40 +15,10 @@ from scipy.spatial.transform import Rotation as R
 
 logger = logging.getLogger(__name__)
 
-ROI_X_MIN_RATIO = 0.10
-ROI_X_MAX_RATIO = 0.90
-ROI_Y_MIN_RATIO = 0.10
-ROI_Y_MAX_RATIO = 0.70
-
 class ObjectDetectionError(Exception):
     pass
 
 class ObjectDetectionService:
-    def build_detection_roi(self, image):
-        height, width = image.shape[:2]
-        x1 = int(width * ROI_X_MIN_RATIO)
-        x2 = int(width * ROI_X_MAX_RATIO)
-        y1 = int(height * ROI_Y_MIN_RATIO)
-        y2 = int(height * ROI_Y_MAX_RATIO)
-        return x1, y1, x2, y2
-
-    def draw_detection_roi(self, image):
-        if image is None:
-            return
-
-        roi_x1, roi_y1, roi_x2, roi_y2 = self.build_detection_roi(image)
-        cv2.rectangle(image, (roi_x1, roi_y1), (roi_x2, roi_y2), (255, 255, 255), 1)
-        cv2.putText(
-            image,
-            "ROI",
-            (roi_x1 + 6, max(20, roi_y1 - 8)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
-
     def draw_view_grid(self, image):
         if image is None:
             return
@@ -143,6 +113,87 @@ class ObjectDetectionService:
             yaw_deg += 180
 
         return yaw_deg, math.radians(yaw_deg)
+
+    def draw_detection_annotation(self, image, bbox, pixel_coords=None, label=None):
+        if image is None or bbox is None:
+            return
+
+        x1, y1, x2, y2 = map(int, bbox)
+        if pixel_coords is None:
+            u = int((x1 + x2) / 2)
+            v = int((y1 + y2) / 2)
+        else:
+            u, v = map(int, pixel_coords)
+
+        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.circle(image, (u, v), 5, (0, 0, 255), -1)
+        if label:
+            cv2.putText(
+                image,
+                label,
+                (x1, max(y1 - 8, 0)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 0),
+                2,
+            )
+
+    def draw_yaw_annotation(
+        self,
+        image,
+        bbox,
+        pixel_coords,
+        object_yaw_deg,
+        object_yaw_rad,
+        show_label=False,
+        show_unavailable_label=False,
+        label_position="below",
+    ):
+        if image is None or bbox is None or pixel_coords is None:
+            return
+
+        x1, y1, x2, y2 = map(int, bbox)
+        u, v = map(int, pixel_coords)
+        image_h = image.shape[0]
+
+        if label_position == "above":
+            label_origin = (x1, max(20, y1 - 10))
+        else:
+            label_origin = (x1, min(image_h - 10, y2 + 22))
+
+        if object_yaw_deg is None or object_yaw_rad is None:
+            if show_unavailable_label:
+                cv2.putText(
+                    image,
+                    "yaw: n/a",
+                    label_origin,
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (255, 0, 255),
+                    2,
+                )
+            return
+
+        axis_len = int(max(x2 - x1, y2 - y1) * 0.45)
+        dx = math.sin(object_yaw_rad) * axis_len
+        dy = math.cos(object_yaw_rad) * axis_len
+        cv2.line(
+            image,
+            (int(u - dx), int(v - dy)),
+            (int(u + dx), int(v + dy)),
+            (255, 0, 255),
+            2,
+        )
+        if show_label:
+            cv2.putText(
+                image,
+                f"yaw: {object_yaw_deg:.1f} deg",
+                label_origin,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 0, 255),
+                2,
+            )
 
     def _get_3d_point_from_pixel(self, depth_image, u, v):
         """
@@ -255,9 +306,8 @@ class ObjectDetectionService:
             object_yaw_rad = None
             depth_in_meters = None
             self.draw_view_grid(detection_image)
-            self.draw_detection_roi(detection_image)
 
-            for box in self._get_candidate_boxes(results, object_class_id, color_image):
+            for box in self._get_candidate_boxes(results, object_class_id):
                 object_coords, candidate_pixel_coords, candidate_bbox, candidate_yaw_deg, candidate_yaw_rad, candidate_depth = self.locate_box_in_base(
                     box,
                     color_image,
@@ -278,20 +328,22 @@ class ObjectDetectionService:
                 # Draw on the image for the successful detection
                 x1, y1, x2, y2 = bbox
                 u, v = pixel_coords
-                cv2.rectangle(detection_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-                cv2.circle(detection_image, (u, v), 5, (0, 0, 255), -1)
+                self.draw_detection_annotation(detection_image, bbox, pixel_coords)
                 image_h, image_w = detection_image.shape[:2]
                 image_center = (image_w // 2, image_h // 2)
                 dx_pixels = u - image_center[0]
                 dy_pixels = v - image_center[1]
                 cv2.line(detection_image, image_center, (u, v), (0, 255, 255), 2)
                 cv2.putText(detection_image, f"dx:{dx_pixels} dy:{dy_pixels}", (int(x1), min(image_h - 10, int(y2) + 22)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
-                if object_yaw_deg is not None:
-                    axis_len = int(max(x2 - x1, y2 - y1) * 0.45)
-                    dx = math.sin(object_yaw_rad) * axis_len
-                    dy = math.cos(object_yaw_rad) * axis_len
-                    cv2.line(detection_image, (int(u - dx), int(v - dy)), (int(u + dx), int(v + dy)), (255, 0, 255), 2)
-                    cv2.putText(detection_image, f"yaw: {object_yaw_deg:.1f} deg", (int(x1), max(20, int(y1) - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                self.draw_yaw_annotation(
+                    detection_image,
+                    bbox,
+                    pixel_coords,
+                    object_yaw_deg,
+                    object_yaw_rad,
+                    show_label=True,
+                    label_position="above",
+                )
 
                 logger.info(f"Found {object_name} at pixel ({u}, {v}) with depth to gripper {depth_in_meters:.3f}m.")
                 logger.info(f"Estimated {object_name} yaw: {object_yaw_deg} degrees.")
@@ -317,26 +369,23 @@ class ObjectDetectionService:
         """
         return [np.pi, 0.0, 0.0]
 
-    def _get_candidate_boxes(self, results, object_class_id: int, image):
-        """Return matching boxes inside the ROI, ordered by confidence."""
-        roi_x1, roi_y1, roi_x2, roi_y2 = self.build_detection_roi(image)
+    def _get_candidate_boxes(self, results, object_class_id: int):
+        """Return matching boxes ordered by confidence."""
         candidates = []
 
         for box in results.boxes:
             if int(box.cls) != object_class_id:
                 continue
 
-            u, v = self._get_box_center(box)
-            if roi_x1 <= u <= roi_x2 and roi_y1 <= v <= roi_y2:
-                confidence = float(box.conf) if box.conf is not None else 1.0
-                candidates.append((confidence, box))
+            confidence = float(box.conf) if box.conf is not None else 1.0
+            candidates.append((confidence, box))
 
         candidates.sort(key=lambda candidate: candidate[0], reverse=True)
         return [box for _, box in candidates]
 
-    def _get_best_box(self, results, object_class_id: int, image):
-        """Return the highest-confidence matching box inside the ROI, or None."""
-        candidates = self._get_candidate_boxes(results, object_class_id, image)
+    def _get_best_box(self, results, object_class_id: int):
+        """Return the highest-confidence matching box, or None."""
+        candidates = self._get_candidate_boxes(results, object_class_id)
         return candidates[0] if candidates else None
 
     def _get_box_center(self, box) -> tuple[int, int]:
@@ -437,7 +486,7 @@ class ObjectDetectionService:
         for i in range(max_iterations):
             color_image, _ = realsense_service.capture_images()
             results = model(color_image, verbose=False)[0]
-            best_box = self._get_best_box(results, object_class_id, color_image)
+            best_box = self._get_best_box(results, object_class_id)
 
             if best_box is None:
                 logger.warning("lost target during vertical alignment, stopping Phase 1.")
@@ -516,7 +565,7 @@ class ObjectDetectionService:
 
         color_image, _ = realsense_service.capture_images()
         results = model(color_image, verbose=False)[0]
-        best_box = self._get_best_box(results, object_class_id, color_image)
+        best_box = self._get_best_box(results, object_class_id)
 
         if best_box is None:
             logger.warning("[Phase 2] Object not found before probe, skipping horizontal alignment.")
@@ -531,7 +580,7 @@ class ObjectDetectionService:
 
             color_image, _ = realsense_service.capture_images()
             results = model(color_image, verbose=False)[0]
-            best_box_probe = self._get_best_box(results, object_class_id, color_image)
+            best_box_probe = self._get_best_box(results, object_class_id)
 
             rtde_c.moveJ(pre_probe_joints, speed=0.2, acceleration=0.4)
             time.sleep(0.3)
@@ -549,7 +598,7 @@ class ObjectDetectionService:
                     for i in range(max_iterations):
                         color_image, _ = realsense_service.capture_images()
                         results = model(color_image, verbose=False)[0]
-                        best_box = self._get_best_box(results, object_class_id, color_image)
+                        best_box = self._get_best_box(results, object_class_id)
 
                         if best_box is None:
                             logger.warning("[Phase 2] Lost target during horizontal alignment, stopping.")
