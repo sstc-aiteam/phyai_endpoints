@@ -25,7 +25,6 @@ class LocateResponse(BaseModel):
     object_pose_in_base: list[float] | None
     object_pixel_coords: list[int] | None
     bbox: list[int] | None = None
-    roi_xyxy: list[int] | None = None
     object_yaw_deg: float | None = None
     object_yaw_rad: float | None = None
     depth_in_meters: float | None = None
@@ -59,7 +58,6 @@ class DetectedWardItem(BaseModel):
     confidence: float
     object_pose_in_base: list[float] | None = None
     object_pixel_coords: list[int] | None = None
-    roi_xyxy: list[int] | None = None
     object_yaw_deg: float | None = None
     object_yaw_rad: float | None = None
     depth_in_meters: float | None = None
@@ -90,11 +88,6 @@ def locate_bottle():
                 b64_image = base64.b64encode(encoded_img).decode('utf-8')
 
         gripper_vec_list = gripper_vec.tolist() if gripper_vec is not None else None
-        roi_xyxy = (
-            list(object_detection_service.build_detection_roi(detected_image))
-            if detected_image is not None
-            else None
-        )
 
         if bottle_coords is not None:
             return {
@@ -104,7 +97,6 @@ def locate_bottle():
                 "object_pose_in_base": bottle_coords.tolist(),
                 "object_pixel_coords": pixel_coords,
                 "bbox": bbox,
-                "roi_xyxy": roi_xyxy,
                 "object_yaw_deg": object_yaw_deg,
                 "object_yaw_rad": object_yaw_rad,
                 "depth_in_meters": depth_in_meters,
@@ -118,7 +110,6 @@ def locate_bottle():
                 "object_pose_in_base": None,
                 "object_pixel_coords": pixel_coords,
                 "bbox": bbox,
-                "roi_xyxy": roi_xyxy,
                 "object_yaw_deg": object_yaw_deg,
                 "object_yaw_rad": object_yaw_rad,
                 "depth_in_meters": depth_in_meters,
@@ -382,11 +373,6 @@ def locate_ward_item(req: LocateWardItemRequest):
                 b64_image = base64.b64encode(encoded_img).decode('utf-8')
 
         gripper_vec_list = gripper_vec.tolist() if gripper_vec is not None else None
-        roi_xyxy = (
-            list(object_detection_service.build_detection_roi(detected_image))
-            if detected_image is not None
-            else None
-        )
 
         detected = obj_coords is not None
         return {
@@ -396,7 +382,6 @@ def locate_ward_item(req: LocateWardItemRequest):
             "object_pose_in_base": obj_coords.tolist() if detected else None,
             "object_pixel_coords": pixel_coords,
             "bbox": bbox,
-            "roi_xyxy": roi_xyxy,
             "object_yaw_deg": object_yaw_deg,
             "object_yaw_rad": object_yaw_rad,
             "depth_in_meters": depth_in_meters,
@@ -425,7 +410,6 @@ def detect_all_ward_items():
         model = ward_item_yolo_service.get_model()
         results = model(color_image, verbose=False)[0]
         T_cam_wrist, R_gripper2base, t_gripper2base_vec, _ = object_detection_service.get_detection_transform_context()
-        roi_xyxy = list(object_detection_service.build_detection_roi(color_image))
 
         detection_image = color_image.copy()
         detected_items: list[DetectedWardItem] = []
@@ -452,28 +436,21 @@ def detect_all_ward_items():
                     confidence=round(conf, 4),
                     object_pose_in_base=obj_coords.tolist() if obj_coords is not None else None,
                     object_pixel_coords=pixel_coords,
-                    roi_xyxy=roi_xyxy,
                     object_yaw_deg=object_yaw_deg,
                     object_yaw_rad=object_yaw_rad,
                     depth_in_meters=depth_in_meters,
                 )
             )
 
-            cv2.rectangle(detection_image, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
-            cv2.circle(detection_image, (pixel_coords[0], pixel_coords[1]), 5, (0, 0, 255), -1)
             label = f"{class_name} {conf:.2f}"
-            cv2.putText(detection_image, label, (bbox[0], max(bbox[1] - 8, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            if object_yaw_deg is not None and object_yaw_rad is not None:
-                axis_len = int(max(bbox[2] - bbox[0], bbox[3] - bbox[1]) * 0.45)
-                dx = np.sin(object_yaw_rad) * axis_len
-                dy = np.cos(object_yaw_rad) * axis_len
-                cv2.line(
-                    detection_image,
-                    (int(pixel_coords[0] - dx), int(pixel_coords[1] - dy)),
-                    (int(pixel_coords[0] + dx), int(pixel_coords[1] + dy)),
-                    (255, 0, 255),
-                    2,
-                )
+            object_detection_service.draw_detection_annotation(detection_image, bbox, pixel_coords, label)
+            object_detection_service.draw_yaw_annotation(
+                detection_image,
+                bbox,
+                pixel_coords,
+                object_yaw_deg,
+                object_yaw_rad,
+            )
 
         b64_image = None
         success, encoded_img = cv2.imencode('.png', detection_image)
@@ -509,7 +486,7 @@ def detect_all_ward_items_visual():
     """
     - Captures an image from the RealSense camera.
     - Uses the `ward_item.pt` YOLOv26n model to detect all ward item classes.
-    - Returns the captured image with bounding boxes and labels drawn on it.
+    - Returns the captured image with bounding boxes, yaw axes, and labels drawn on it.
     """
     try:
         if not realsense_service.is_initialized:
@@ -529,10 +506,24 @@ def detect_all_ward_items_visual():
             bbox = [int(x1), int(y1), int(x2), int(y2)]
             conf = float(box.conf[0].item())
             class_name = BEST_CLASS_NAMES[cls_id]
+            u = int((bbox[0] + bbox[2]) / 2)
+            v = int((bbox[1] + bbox[3]) / 2)
+            object_yaw_deg, object_yaw_rad = object_detection_service.calc_yaw_from_bbox_pca(
+                color_image,
+                bbox,
+            )
 
-            cv2.rectangle(detection_image, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
             label = f"{class_name} {conf:.2f}"
-            cv2.putText(detection_image, label, (bbox[0], max(bbox[1] - 8, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            object_detection_service.draw_detection_annotation(detection_image, bbox, [u, v], label)
+            object_detection_service.draw_yaw_annotation(
+                detection_image,
+                bbox,
+                [u, v],
+                object_yaw_deg,
+                object_yaw_rad,
+                show_label=True,
+                show_unavailable_label=True,
+            )
 
         success, encoded_img = cv2.imencode('.png', detection_image)
         if not success:
