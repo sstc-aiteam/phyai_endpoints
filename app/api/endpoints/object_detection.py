@@ -57,6 +57,12 @@ class DetectedWardItem(BaseModel):
     class_name: str
     bbox: list[int]
     confidence: float
+    object_pose_in_base: list[float] | None = None
+    object_pixel_coords: list[int] | None = None
+    roi_xyxy: list[int] | None = None
+    object_yaw_deg: float | None = None
+    object_yaw_rad: float | None = None
+    depth_in_meters: float | None = None
 
 class DetectAllWardItemsResponse(BaseModel):
     message: str
@@ -415,9 +421,11 @@ def detect_all_ward_items():
         if not realsense_service.is_initialized:
             realsense_service._initialize()
 
-        color_image, _ = realsense_service.capture_images()
+        color_image, depth_image = realsense_service.capture_images()
         model = ward_item_yolo_service.get_model()
         results = model(color_image, verbose=False)[0]
+        T_cam_wrist, R_gripper2base, t_gripper2base_vec, _ = object_detection_service.get_detection_transform_context()
+        roi_xyxy = list(object_detection_service.build_detection_roi(color_image))
 
         detection_image = color_image.copy()
         detected_items: list[DetectedWardItem] = []
@@ -426,16 +434,46 @@ def detect_all_ward_items():
             cls_id = int(box.cls[0].item())
             if cls_id < 0 or cls_id >= len(BEST_CLASS_NAMES):
                 continue
-            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-            bbox = [int(x1), int(y1), int(x2), int(y2)]
             conf = float(box.conf[0].item())
             class_name = BEST_CLASS_NAMES[cls_id]
+            obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters = object_detection_service.locate_box_in_base(
+                box,
+                color_image,
+                depth_image,
+                T_cam_wrist,
+                R_gripper2base,
+                t_gripper2base_vec,
+            )
 
-            detected_items.append(DetectedWardItem(class_name=class_name, bbox=bbox, confidence=round(conf, 4)))
+            detected_items.append(
+                DetectedWardItem(
+                    class_name=class_name,
+                    bbox=bbox,
+                    confidence=round(conf, 4),
+                    object_pose_in_base=obj_coords.tolist() if obj_coords is not None else None,
+                    object_pixel_coords=pixel_coords,
+                    roi_xyxy=roi_xyxy,
+                    object_yaw_deg=object_yaw_deg,
+                    object_yaw_rad=object_yaw_rad,
+                    depth_in_meters=depth_in_meters,
+                )
+            )
 
             cv2.rectangle(detection_image, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
+            cv2.circle(detection_image, (pixel_coords[0], pixel_coords[1]), 5, (0, 0, 255), -1)
             label = f"{class_name} {conf:.2f}"
             cv2.putText(detection_image, label, (bbox[0], max(bbox[1] - 8, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            if object_yaw_deg is not None and object_yaw_rad is not None:
+                axis_len = int(max(bbox[2] - bbox[0], bbox[3] - bbox[1]) * 0.45)
+                dx = np.sin(object_yaw_rad) * axis_len
+                dy = np.cos(object_yaw_rad) * axis_len
+                cv2.line(
+                    detection_image,
+                    (int(pixel_coords[0] - dx), int(pixel_coords[1] - dy)),
+                    (int(pixel_coords[0] + dx), int(pixel_coords[1] + dy)),
+                    (255, 0, 255),
+                    2,
+                )
 
         b64_image = None
         success, encoded_img = cv2.imencode('.png', detection_image)
@@ -448,6 +486,9 @@ def detect_all_ward_items():
     except RealSenseError as e:
         logger.error(f"Camera error in /detect-all-ward-items: {e}", exc_info=True)
         raise HTTPException(status_code=503, detail=f"Camera error: {str(e)}")
+    except ObjectDetectionError as e:
+        logger.error(f"Failed to locate detected ward items: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Unexpected error in /detect-all-ward-items: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
