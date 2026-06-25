@@ -222,7 +222,7 @@ class ObjectDetectionService:
     #     see reference: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/cfg/datasets/coco.yaml#L18
     # param object_name: A human-readable name for the object (used for logging and error messages)
     ## 
-  def locate_object_in_base(self, object_class_id: int, object_name: str, model=None, color_image=None, depth_image=None):
+    def locate_object_in_base(self, object_class_id: int, object_name: str, model=None, color_image=None, depth_image=None):
         """
         Locates a specified object using YOLO and calculates its pose in the robot's base frame.
         """
