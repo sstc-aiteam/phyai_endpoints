@@ -136,28 +136,14 @@ def locate_bottle():
 )
 def locate_bottle_visual():
     """
-    - Captures an image from the RealSense camera.
-    - Uses YOLOv8 to detect a 'bottle' (COCO class ID 39).
-    - Returns the captured image with detection results (bounding box and center point) drawn on it.
+    - Delegates to `locate_bottle()` for full detection logic.
+    - Returns the annotated detection image as a PNG.
     """
-    try:
-        BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
-        _, _, _, _, _, _, _, _, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
-
-        if detected_image is None:
-            raise HTTPException(status_code=500, detail="Failed to get an image from the camera service.")
-
-        success, encoded_img = cv2.imencode('.png', detected_image)
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to encode image to PNG")
-
-        return Response(content=encoded_img.tobytes(), media_type="image/png")
-    except ObjectDetectionError as e:
-        logger.error(f"Failed to locate bottle for visual: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Unexpected error in /locate-bottle-visual: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+    result = locate_bottle()
+    if not result.get("detection_image_base64"):
+        raise HTTPException(status_code=500, detail="Detection produced no image.")
+    image_bytes = base64.b64decode(result["detection_image_base64"])
+    return Response(content=image_bytes, media_type="image/png")
 
 @router.post(
     "/locate-bottle-pointcloud",
@@ -450,6 +436,7 @@ def detect_all_ward_items():
                 pixel_coords,
                 object_yaw_deg,
                 object_yaw_rad,
+                show_label=True,
             )
 
         b64_image = None
