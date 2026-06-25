@@ -176,15 +176,53 @@ class ObjectDetectionService:
 
         return depth_in_meters, p_cam
 
+    def get_detection_transform_context(self):
+        if not os.path.exists(settings.CALIBRATION_FILE):
+            raise ObjectDetectionError(f"Calibration file '{settings.CALIBRATION_FILE}' not found. Please run a hand-eye calibration first.")
+
+        try:
+            T_cam_wrist = np.load(settings.CALIBRATION_FILE)
+            R_gripper2base, t_gripper2base_vec = hand_eye_calibration_service.get_robot_pose()
+            arm_joint_info = hand_eye_calibration_service.get_arm_joint_info()
+            return T_cam_wrist, R_gripper2base, t_gripper2base_vec, arm_joint_info
+        except HandEyeCalibrationError as e:
+            raise ObjectDetectionError(f"Error during object detection: {e}") from e
+
+    def locate_box_in_base(
+        self,
+        box,
+        color_image,
+        depth_image,
+        T_cam_wrist,
+        R_gripper2base,
+        t_gripper2base_vec,
+    ):
+        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+        bbox = [int(x1), int(y1), int(x2), int(y2)]
+        u, v = self._get_box_center(box)
+        depth_in_meters, p_cam = self._get_3d_point_from_pixel(depth_image, u, v)
+        object_yaw_deg, object_yaw_rad = self.calc_yaw_from_bbox_pca(color_image, bbox)
+
+        object_coords = None
+        if p_cam is not None:
+            p_cam_homog = np.array(list(p_cam) + [1.0])
+
+            T_wrist_base = np.eye(4)
+            T_wrist_base[:3, :3] = R_gripper2base
+            T_wrist_base[:3, 3] = t_gripper2base_vec
+
+            p_base = T_wrist_base @ T_cam_wrist @ p_cam_homog
+            object_coords = p_base[:3]
+
+        return object_coords, [u, v], bbox, object_yaw_deg, object_yaw_rad, depth_in_meters
+
     ## 
     # Main method to locate object and calculate its pose in the robot's base frame
     # param object_class_id: The class ID of the object to detect (e.g., 0 for a single-class bottle model),
     #     see reference: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/cfg/datasets/coco.yaml#L18
     # param object_name: A human-readable name for the object (used for logging and error messages)
     ## 
-    def locate_object_in_base(self, object_class_id: int, object_name: str, color_image=None, depth_image=None):
-
-    def locate_object_in_base(self, object_class_id: int, object_name: str, model=None):
+    def locate_object_in_base(self, object_class_id: int, object_name: str, model=None, color_image=None, depth_image=None):
         """
         Locates a specified object using YOLO and calculates its pose in the robot's base frame.
         """
@@ -195,18 +233,15 @@ class ObjectDetectionService:
             # 1. Get services ready
             if model is None:
                 model = bottle_yolo_service.get_model()
-            T_cam_wrist = np.load(settings.CALIBRATION_FILE)
-            
-            # Get robot pose (this will also connect to the robot's receive interface if needed)
-            R_gripper2base, t_gripper2base_vec = hand_eye_calibration_service.get_robot_pose()
-            arm_joint_info = hand_eye_calibration_service.get_arm_joint_info()
+            T_cam_wrist, R_gripper2base, t_gripper2base_vec, arm_joint_info = self.get_detection_transform_context()
             
             # Ensure camera is ready
             if not realsense_service.is_initialized:
                 realsense_service._initialize()
 
-            # 2. Capture Frames
-            color_image, depth_image = realsense_service.capture_images()
+            # 2. Capture frames unless the caller already provided an aligned pair.
+            if color_image is None or depth_image is None:
+                color_image, depth_image = realsense_service.capture_images()
 
             detection_image = color_image.copy()
             
@@ -223,31 +258,26 @@ class ObjectDetectionService:
             self.draw_detection_roi(detection_image)
 
             for box in self._get_candidate_boxes(results, object_class_id, color_image):
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                candidate_bbox = [int(x1), int(y1), int(x2), int(y2)]
-                u, v = self._get_box_center(box)
-
-                # 4. Get Depth and 3D point in camera frame
-                candidate_depth, p_cam = self._get_3d_point_from_pixel(depth_image, u, v)
-                if not p_cam:
+                object_coords, candidate_pixel_coords, candidate_bbox, candidate_yaw_deg, candidate_yaw_rad, candidate_depth = self.locate_box_in_base(
+                    box,
+                    color_image,
+                    depth_image,
+                    T_cam_wrist,
+                    R_gripper2base,
+                    t_gripper2base_vec,
+                )
+                if object_coords is None:
                     continue
 
                 bbox = candidate_bbox
-                pixel_coords = [u, v]
+                pixel_coords = candidate_pixel_coords
                 depth_in_meters = candidate_depth
-                object_yaw_deg, object_yaw_rad = self.calc_yaw_from_bbox_pca(color_image, bbox)
-
-                # 5. Transform: Camera -> Wrist -> Base
-                p_cam_homog = np.array(p_cam + [1.0])
-
-                T_wrist_base = np.eye(4)
-                T_wrist_base[:3, :3] = R_gripper2base
-                T_wrist_base[:3, 3] = t_gripper2base_vec
-
-                p_base = T_wrist_base @ T_cam_wrist @ p_cam_homog
-                object_coords = p_base[:3]
+                object_yaw_deg = candidate_yaw_deg
+                object_yaw_rad = candidate_yaw_rad
 
                 # Draw on the image for the successful detection
+                x1, y1, x2, y2 = bbox
+                u, v = pixel_coords
                 cv2.rectangle(detection_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
                 cv2.circle(detection_image, (u, v), 5, (0, 0, 255), -1)
                 image_h, image_w = detection_image.shape[:2]
