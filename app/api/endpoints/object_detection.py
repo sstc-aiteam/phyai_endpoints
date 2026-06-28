@@ -136,28 +136,14 @@ def locate_bottle():
 )
 def locate_bottle_visual():
     """
-    - Captures an image from the RealSense camera.
-    - Uses YOLOv8 to detect a 'bottle' (COCO class ID 39).
-    - Returns the captured image with detection results (bounding box and center point) drawn on it.
+    - Delegates to `locate_bottle()` for full detection logic.
+    - Returns the annotated detection image as a PNG.
     """
-    try:
-        BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
-        _, _, _, _, _, _, _, _, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
-
-        if detected_image is None:
-            raise HTTPException(status_code=500, detail="Failed to get an image from the camera service.")
-
-        success, encoded_img = cv2.imencode('.png', detected_image)
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to encode image to PNG")
-
-        return Response(content=encoded_img.tobytes(), media_type="image/png")
-    except ObjectDetectionError as e:
-        logger.error(f"Failed to locate bottle for visual: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Unexpected error in /locate-bottle-visual: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+    result = locate_bottle()
+    if not result.get("detection_image_base64"):
+        raise HTTPException(status_code=500, detail="Detection produced no image.")
+    image_bytes = base64.b64decode(result["detection_image_base64"])
+    return Response(content=image_bytes, media_type="image/png")
 
 @router.post(
     "/locate-bottle-pointcloud",
@@ -450,6 +436,7 @@ def detect_all_ward_items():
                 pixel_coords,
                 object_yaw_deg,
                 object_yaw_rad,
+                show_label=True,
             )
 
         b64_image = None
@@ -484,59 +471,14 @@ def detect_all_ward_items():
 )
 def detect_all_ward_items_visual():
     """
-    - Captures an image from the RealSense camera.
-    - Uses the `ward_item.pt` YOLOv26n model to detect all ward item classes.
-    - Returns the captured image with bounding boxes, yaw axes, and labels drawn on it.
+    - Delegates to `detect_all_ward_items()` for full detection logic.
+    - Returns the annotated detection image as a PNG.
     """
-    try:
-        if not realsense_service.is_initialized:
-            realsense_service._initialize()
-
-        color_image, _ = realsense_service.capture_images()
-        model = ward_item_yolo_service.get_model()
-        results = model(color_image, verbose=False)[0]
-
-        detection_image = color_image.copy()
-
-        for box in results.boxes:
-            cls_id = int(box.cls[0].item())
-            if cls_id < 0 or cls_id >= len(BEST_CLASS_NAMES):
-                continue
-            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-            bbox = [int(x1), int(y1), int(x2), int(y2)]
-            conf = float(box.conf[0].item())
-            class_name = BEST_CLASS_NAMES[cls_id]
-            u = int((bbox[0] + bbox[2]) / 2)
-            v = int((bbox[1] + bbox[3]) / 2)
-            object_yaw_deg, object_yaw_rad = object_detection_service.calc_yaw_from_bbox_pca(
-                color_image,
-                bbox,
-            )
-
-            label = f"{class_name} {conf:.2f}"
-            object_detection_service.draw_detection_annotation(detection_image, bbox, [u, v], label)
-            object_detection_service.draw_yaw_annotation(
-                detection_image,
-                bbox,
-                [u, v],
-                object_yaw_deg,
-                object_yaw_rad,
-                show_label=True,
-                show_unavailable_label=True,
-            )
-
-        success, encoded_img = cv2.imencode('.png', detection_image)
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to encode image to PNG")
-
-        return Response(content=encoded_img.tobytes(), media_type="image/png")
-
-    except RealSenseError as e:
-        logger.error(f"Camera error in /detect-all-ward-items-visual: {e}", exc_info=True)
-        raise HTTPException(status_code=503, detail=f"Camera error: {str(e)}")
-    except Exception as e:
-        logger.error(f"Unexpected error in /detect-all-ward-items-visual: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+    result = detect_all_ward_items()
+    if not result.detection_image_base64:
+        raise HTTPException(status_code=500, detail="Detection produced no image.")
+    image_bytes = base64.b64decode(result.detection_image_base64)
+    return Response(content=image_bytes, media_type="image/png")
 
 
 @router.post("/grasp-bottle", response_model=GraspResponse, summary="Detect a bottle and execute a grasp motion")
