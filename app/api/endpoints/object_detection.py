@@ -417,7 +417,7 @@ def detect_all_ward_items():
                 continue
             conf = float(box.conf[0].item())
             class_name = BEST_CLASS_NAMES[cls_id]
-            obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters = object_detection_service.locate_box_in_base(
+            obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, _ = object_detection_service.locate_box_in_base(
                 box,
                 color_image,
                 depth_image,
@@ -543,8 +543,8 @@ def locate_ward_item_seg(req: LocateWardItemRequest):
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
-@router.post("/detect-all-ward-items-seg", response_model=DetectAllWardItemsSegResponse, summary="Detect all ward items using ward_item_seg.pt with segmentation masks")
-def detect_all_ward_items_seg():
+@router.post("/segment-all-ward-items", response_model=DetectAllWardItemsSegResponse, summary="Detect all ward items using ward_item_seg.pt with segmentation masks")
+def segment_all_ward_items():
     """
     - Captures an image from the RealSense camera.
     - Uses the `ward_item_seg.pt` segmentation model to detect all ward item classes.
@@ -608,18 +608,18 @@ def detect_all_ward_items_seg():
         return DetectAllWardItemsSegResponse(message=msg, detected_items=detected_items, detection_image_base64=b64_image)
 
     except RealSenseError as e:
-        logger.error(f"Camera error in /detect-all-ward-items-seg: {e}", exc_info=True)
+        logger.error(f"Camera error in /segment-all-ward-items: {e}", exc_info=True)
         raise HTTPException(status_code=503, detail=f"Camera error: {str(e)}")
     except ObjectDetectionError as e:
-        logger.error(f"Failed in /detect-all-ward-items-seg: {e}", exc_info=True)
+        logger.error(f"Failed in /segment-all-ward-items: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected error in /detect-all-ward-items-seg: {e}", exc_info=True)
+        logger.error(f"Unexpected error in /segment-all-ward-items: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
 @router.post(
-    "/detect-all-ward-items-seg-visual",
+    "/segment-all-ward-items-visual",
     summary="Detect all ward items (seg) and return annotated image with masks",
     response_class=Response,
     responses={
@@ -629,12 +629,12 @@ def detect_all_ward_items_seg():
         }
     },
 )
-def detect_all_ward_items_seg_visual():
+def segment_all_ward_items_visual():
     """
-    - Delegates to `detect_all_ward_items_seg()` for full detection logic.
+    - Delegates to `segment_all_ward_items()` for full detection logic.
     - Returns the annotated detection image (with mask overlays) as a PNG.
     """
-    result = detect_all_ward_items_seg()
+    result = segment_all_ward_items()
     if not result.detection_image_base64:
         raise HTTPException(status_code=500, detail="Detection produced no image.")
     image_bytes = base64.b64decode(result.detection_image_base64)
