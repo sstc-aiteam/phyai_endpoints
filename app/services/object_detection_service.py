@@ -286,6 +286,8 @@ class ObjectDetectionService:
     def locate_object_in_base(self, object_class_id: int, object_name: str, model=None, color_image=None, depth_image=None):
         """
         Locates a specified object using YOLO and calculates its pose in the robot's base frame.
+        Supports both detection and segmentation models — when the model outputs masks, the mask
+        centroid is used for depth sampling and the contour is returned as the last element.
         """
         if not os.path.exists(settings.CALIBRATION_FILE):
             raise ObjectDetectionError(f"Calibration file '{settings.CALIBRATION_FILE}' not found. Please run a hand-eye calibration first.")
@@ -295,8 +297,7 @@ class ObjectDetectionService:
             if model is None:
                 model = bottle_yolo_service.get_model()
             T_cam_wrist, R_gripper2base, t_gripper2base_vec, arm_joint_info = self.get_detection_transform_context()
-            
-            # Ensure camera is ready
+
             if not realsense_service.is_initialized:
                 realsense_service._initialize()
 
@@ -305,9 +306,10 @@ class ObjectDetectionService:
                 color_image, depth_image = realsense_service.capture_images()
 
             detection_image = color_image.copy()
-            
+
             # 3. Run Inference
             results = model(color_image, verbose=False)[0]
+            masks = results.masks
 
             object_coords = None
             pixel_coords = None
@@ -315,16 +317,19 @@ class ObjectDetectionService:
             object_yaw_deg = None
             object_yaw_rad = None
             depth_in_meters = None
+            mask_contour = None
             self.draw_view_grid(detection_image)
 
-            for _, box in self._get_candidate_boxes_with_idx(results, object_class_id):
-                object_coords, candidate_pixel_coords, candidate_bbox, candidate_yaw_deg, candidate_yaw_rad, candidate_depth, _ = self.locate_box_in_base(
+            for box_idx, box in self._get_candidate_boxes_with_idx(results, object_class_id):
+                object_coords, candidate_pixel_coords, candidate_bbox, candidate_yaw_deg, candidate_yaw_rad, candidate_depth, candidate_mask = self.locate_box_in_base(
                     box,
                     color_image,
                     depth_image,
                     T_cam_wrist,
                     R_gripper2base,
                     t_gripper2base_vec,
+                    masks,
+                    box_idx,
                 )
                 if object_coords is None:
                     continue
@@ -334,8 +339,11 @@ class ObjectDetectionService:
                 depth_in_meters = candidate_depth
                 object_yaw_deg = candidate_yaw_deg
                 object_yaw_rad = candidate_yaw_rad
+                mask_contour = candidate_mask
 
-                # Draw on the image for the successful detection
+                if mask_contour:
+                    self.draw_seg_mask_annotation(detection_image, mask_contour)
+
                 x1, y1, x2, y2 = bbox
                 u, v = pixel_coords
                 self.draw_detection_annotation(detection_image, bbox, pixel_coords)
@@ -355,12 +363,12 @@ class ObjectDetectionService:
                     label_position="above",
                 )
 
-                logger.info(f"Found {object_name} at pixel ({u}, {v}) with depth to gripper {depth_in_meters:.3f}m.")
+                logger.info(f"Found {object_name} at pixel ({u}, {v}) with depth {depth_in_meters:.3f}m.")
                 logger.info(f"Estimated {object_name} yaw: {object_yaw_deg} degrees.")
                 logger.info(f"Calculated base coordinates: {object_coords.tolist()}")
                 break
 
-            return t_gripper2base_vec, arm_joint_info, object_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detection_image
+            return t_gripper2base_vec, arm_joint_info, object_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detection_image, mask_contour
 
         except (HandEyeCalibrationError, RealSenseError) as e:
             raise ObjectDetectionError(f"Error during object detection: {e}") from e
@@ -417,78 +425,6 @@ class ObjectDetectionService:
         cv2.fillPoly(overlay, [pts], color)
         cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0, image)
         cv2.polylines(image, [pts], isClosed=True, color=color, thickness=2)
-
-    def locate_object_seg_in_base(self, object_class_id: int, object_name: str, model, color_image=None, depth_image=None):
-        """Like locate_object_in_base but for segmentation models.
-
-        Uses mask centroid for depth sampling when available.
-        Returns the same tuple as locate_object_in_base plus mask_contour as the last element.
-        """
-        if not os.path.exists(settings.CALIBRATION_FILE):
-            raise ObjectDetectionError(f"Calibration file '{settings.CALIBRATION_FILE}' not found. Please run a hand-eye calibration first.")
-
-        try:
-            T_cam_wrist, R_gripper2base, t_gripper2base_vec, arm_joint_info = self.get_detection_transform_context()
-
-            if not realsense_service.is_initialized:
-                realsense_service._initialize()
-
-            if color_image is None or depth_image is None:
-                color_image, depth_image = realsense_service.capture_images()
-
-            detection_image = color_image.copy()
-            results = model(color_image, verbose=False)[0]
-            masks = results.masks
-
-            object_coords = None
-            pixel_coords = None
-            bbox = None
-            object_yaw_deg = None
-            object_yaw_rad = None
-            depth_in_meters = None
-            mask_contour = None
-            self.draw_view_grid(detection_image)
-
-            for box_idx, box in self._get_candidate_boxes_with_idx(results, object_class_id):
-                object_coords, candidate_pixel_coords, candidate_bbox, candidate_yaw_deg, candidate_yaw_rad, candidate_depth, candidate_mask = self.locate_box_in_base(
-                    box, color_image, depth_image, T_cam_wrist, R_gripper2base, t_gripper2base_vec, masks, box_idx,
-                )
-                if object_coords is None:
-                    continue
-
-                bbox = candidate_bbox
-                pixel_coords = candidate_pixel_coords
-                depth_in_meters = candidate_depth
-                object_yaw_deg = candidate_yaw_deg
-                object_yaw_rad = candidate_yaw_rad
-                mask_contour = candidate_mask
-
-                if mask_contour:
-                    self.draw_seg_mask_annotation(detection_image, mask_contour)
-
-                x1, y1, x2, y2 = bbox
-                u, v = pixel_coords
-                self.draw_detection_annotation(detection_image, bbox, pixel_coords)
-                image_h, image_w = detection_image.shape[:2]
-                image_center = (image_w // 2, image_h // 2)
-                dx_pixels = u - image_center[0]
-                dy_pixels = v - image_center[1]
-                cv2.line(detection_image, image_center, (u, v), (0, 255, 255), 2)
-                cv2.putText(detection_image, f"dx:{dx_pixels} dy:{dy_pixels}", (int(x1), min(image_h - 10, int(y2) + 22)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
-                self.draw_yaw_annotation(detection_image, bbox, pixel_coords, object_yaw_deg, object_yaw_rad, show_label=True, label_position="above")
-
-                logger.info(f"Found {object_name} at pixel ({u}, {v}) with depth {depth_in_meters:.3f}m.")
-                logger.info(f"Estimated {object_name} yaw: {object_yaw_deg} degrees.")
-                logger.info(f"Calculated base coordinates: {object_coords.tolist()}")
-                break
-
-            return t_gripper2base_vec, arm_joint_info, object_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detection_image, mask_contour
-
-        except (HandEyeCalibrationError, RealSenseError) as e:
-            raise ObjectDetectionError(f"Error during object detection: {e}") from e
-        except Exception as e:
-            logger.error(f"Unexpected error in locate_object_seg_in_base: {e}", exc_info=True)
-            raise ObjectDetectionError(f"An unexpected error occurred: {e}") from e
 
     def adjust_gripper_parallel(self, max_iterations=10):
         """
@@ -751,7 +687,7 @@ class ObjectDetectionService:
             raise ObjectDetectionError(f"Calibration file '{settings.CALIBRATION_FILE}' not found. Please run a hand-eye calibration first.")
 
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
-        _, _, bottle_xyz, _, _, _, _, _, _ = self.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        _, _, bottle_xyz, _, _, _, _, _, _, _ = self.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
 
         if bottle_xyz is not None:
             logger.info(f"Attempting to grasp bottle at base coordinates: {bottle_xyz.tolist()}")

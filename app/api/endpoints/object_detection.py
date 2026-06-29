@@ -90,7 +90,7 @@ def locate_bottle():
     """
     try:
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
-        gripper_vec, arm_joint_info, bottle_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        gripper_vec, arm_joint_info, bottle_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image, _ = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
 
         b64_image = None
         if detected_image is not None:
@@ -183,7 +183,7 @@ def locate_bottle_pointcloud(
         color_image = np.asanyarray(color_frame.get_data())
         depth_image = np.asanyarray(depth_frame.get_data())
 
-        _, _, bottle_coords, _, bbox, _, _, depth_in_meters, _ = object_detection_service.locate_object_in_base(
+        _, _, bottle_coords, _, bbox, _, _, depth_in_meters, _, _ = object_detection_service.locate_object_in_base(
             BOTTLE_CLASS_ID,
             "bottle",
             color_image=color_image,
@@ -251,7 +251,7 @@ def locate_bottle_pointcloud_visual(
         color_image = np.asanyarray(color_frame.get_data())
         depth_image = np.asanyarray(depth_frame.get_data())
 
-        _, _, bottle_coords, _, bbox, _, _, depth_in_meters, _ = object_detection_service.locate_object_in_base(
+        _, _, bottle_coords, _, bbox, _, _, depth_in_meters, _, _ = object_detection_service.locate_object_in_base(
             BOTTLE_CLASS_ID,
             "bottle",
             color_image=color_image,
@@ -360,7 +360,7 @@ def locate_ward_item(req: LocateWardItemRequest):
     model = ward_item_yolo_service.get_model()
 
     try:
-        gripper_vec, arm_joint_info, obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image = \
+        gripper_vec, arm_joint_info, obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image, _ = \
             object_detection_service.locate_object_in_base(class_id, req.object_name, model=model)
 
         b64_image = None
@@ -512,7 +512,7 @@ def locate_ward_item_seg(req: LocateWardItemRequest):
 
     try:
         gripper_vec, arm_joint_info, obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image, mask_contour = \
-            object_detection_service.locate_object_seg_in_base(class_id, req.object_name, model=model)
+            object_detection_service.locate_object_in_base(class_id, req.object_name, model=model)
 
         b64_image = None
         if detected_image is not None:
@@ -571,9 +571,10 @@ def detect_all_ward_items_seg():
             class_name = BEST_CLASS_NAMES[cls_id]
 
             obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, mask_contour = \
-                object_detection_service.locate_box_seg_in_base(
-                    box, masks, box_idx, color_image, depth_image,
+                object_detection_service.locate_box_in_base(
+                    box, color_image, depth_image,
                     T_cam_wrist, R_gripper2base, t_gripper2base_vec,
+                    masks, box_idx,
                 )
 
             detected_items.append(
