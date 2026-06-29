@@ -10,7 +10,7 @@ from datetime import datetime
 from app.core.config import settings
 from app.services.object_detection_service import object_detection_service, ObjectDetectionError
 from app.services.pointcloud import encode_binary_ply
-from app.services.yolo_service import ward_item_yolo_service, ward_item_seg_yolo_service
+from app.services.yolo_service import ward_item_yolo_service, ward_item_seg_yolo_service, bottle_yolo_service
 from app.services.realsense import realsense_service, RealSenseError
 
 
@@ -90,7 +90,9 @@ def locate_bottle():
     """
     try:
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
-        gripper_vec, arm_joint_info, bottle_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image, _ = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        bottle_model = bottle_yolo_service.get_model()
+        gripper_vec, arm_joint_info, bottle_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image, _ = \
+            object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle", model=bottle_model)
 
         b64_image = None
         if detected_image is not None:
@@ -179,6 +181,7 @@ def locate_bottle_pointcloud(
     """
     try:
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
+        bottle_model = bottle_yolo_service.get_model()
         color_frame, depth_frame = realsense_service.capture_aligned_frames()
         color_image = np.asanyarray(color_frame.get_data())
         depth_image = np.asanyarray(depth_frame.get_data())
@@ -186,6 +189,7 @@ def locate_bottle_pointcloud(
         _, _, bottle_coords, _, bbox, _, _, depth_in_meters, _, _ = object_detection_service.locate_object_in_base(
             BOTTLE_CLASS_ID,
             "bottle",
+            bottle_model,
             color_image=color_image,
             depth_image=depth_image,
         )
@@ -247,6 +251,7 @@ def locate_bottle_pointcloud_visual(
     """
     try:
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
+        bottle_model = bottle_yolo_service.get_model()
         color_frame, depth_frame = realsense_service.capture_aligned_frames()
         color_image = np.asanyarray(color_frame.get_data())
         depth_image = np.asanyarray(depth_frame.get_data())
@@ -254,6 +259,7 @@ def locate_bottle_pointcloud_visual(
         _, _, bottle_coords, _, bbox, _, _, depth_in_meters, _, _ = object_detection_service.locate_object_in_base(
             BOTTLE_CLASS_ID,
             "bottle",
+            bottle_model,
             color_image=color_image,
             depth_image=depth_image,
         )
@@ -342,8 +348,8 @@ def center_on_object(req: CenterOnObjectRequest):
 
 
 
-@router.post("/locate-ward-item", response_model=LocateResponse, summary="Locate a specific ward item using best.pt and return its pose")
-def locate_ward_item(req: LocateWardItemRequest):
+@router.post("/detect-ward-item", response_model=LocateResponse, summary="Locate a specific ward item using best.pt and return its pose")
+def detect_ward_item(req: LocateWardItemRequest):
     """
     - Accepts an `object_name` from: `['ac_remotecontrol', 'bottle_alcohol_spray', 'cotton_swab', 'cotton_swabs_pp', 'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb']`
     - Captures an image from the RealSense camera.
@@ -388,7 +394,7 @@ def locate_ward_item(req: LocateWardItemRequest):
         logger.error(f"Failed to locate ward item: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected error in /locate-ward-item: {e}", exc_info=True)
+        logger.error(f"Unexpected error in /detect-ward-item: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
@@ -492,10 +498,10 @@ def detect_all_ward_items_visual():
     return Response(content=image_bytes, media_type="image/png")
 
 
-@router.post("/locate-ward-item-seg", response_model=LocateSegResponse, summary="Locate a specific ward item using ward_item_seg.pt and return its pose with mask")
-def locate_ward_item_seg(req: LocateWardItemRequest):
+@router.post("/segment-ward-item", response_model=LocateSegResponse, summary="Locate a specific ward item using ward_item_seg.pt and return its pose with mask")
+def segment_ward_item(req: LocateWardItemRequest):
     """
-    - Accepts an `object_name` from the same set as `/locate-ward-item`.
+    - Accepts an `object_name` from the same set as `/detect-ward-item`.
     - Captures an image from the RealSense camera.
     - Uses the `ward_item_seg.pt` segmentation model to detect the requested ward item.
     - Pixel coordinates are derived from the mask centroid for higher accuracy.
@@ -539,7 +545,7 @@ def locate_ward_item_seg(req: LocateWardItemRequest):
         logger.error(f"Failed to locate ward item (seg): {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected error in /locate-ward-item-seg: {e}", exc_info=True)
+        logger.error(f"Unexpected error in /segment-ward-item: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 

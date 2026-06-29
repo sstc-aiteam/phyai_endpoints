@@ -295,7 +295,7 @@ class ObjectDetectionService:
         try:
             # 1. Get services ready
             if model is None:
-                model = bottle_yolo_service.get_model()
+                model = ward_item_seg_yolo_service.get_model()
             T_cam_wrist, R_gripper2base, t_gripper2base_vec, arm_joint_info = self.get_detection_transform_context()
 
             if not realsense_service.is_initialized:
