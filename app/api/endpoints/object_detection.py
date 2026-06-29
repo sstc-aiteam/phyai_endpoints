@@ -10,7 +10,7 @@ from datetime import datetime
 from app.core.config import settings
 from app.services.object_detection_service import object_detection_service, ObjectDetectionError
 from app.services.pointcloud import encode_binary_ply
-from app.services.yolo_service import ward_item_yolo_service
+from app.services.yolo_service import ward_item_yolo_service, ward_item_seg_yolo_service
 from app.services.realsense import realsense_service, RealSenseError
 
 
@@ -65,6 +65,17 @@ class DetectedWardItem(BaseModel):
 class DetectAllWardItemsResponse(BaseModel):
     message: str
     detected_items: list[DetectedWardItem]
+    detection_image_base64: str | None = None
+
+class LocateSegResponse(LocateResponse):
+    mask_contour: list[list[int]] | None = None
+
+class DetectedWardItemSeg(DetectedWardItem):
+    mask_contour: list[list[int]] | None = None
+
+class DetectAllWardItemsSegResponse(BaseModel):
+    message: str
+    detected_items: list[DetectedWardItemSeg]
     detection_image_base64: str | None = None
 
 
@@ -475,6 +486,154 @@ def detect_all_ward_items_visual():
     - Returns the annotated detection image as a PNG.
     """
     result = detect_all_ward_items()
+    if not result.detection_image_base64:
+        raise HTTPException(status_code=500, detail="Detection produced no image.")
+    image_bytes = base64.b64decode(result.detection_image_base64)
+    return Response(content=image_bytes, media_type="image/png")
+
+
+@router.post("/locate-ward-item-seg", response_model=LocateSegResponse, summary="Locate a specific ward item using ward_item_seg.pt and return its pose with mask")
+def locate_ward_item_seg(req: LocateWardItemRequest):
+    """
+    - Accepts an `object_name` from the same set as `/locate-ward-item`.
+    - Captures an image from the RealSense camera.
+    - Uses the `ward_item_seg.pt` segmentation model to detect the requested ward item.
+    - Pixel coordinates are derived from the mask centroid for higher accuracy.
+    - Returns the 3D pose in the robot's base frame plus the mask contour polygon.
+    """
+    if req.object_name not in BEST_CLASS_NAMES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid object_name '{req.object_name}'. Valid values: {BEST_CLASS_NAMES}",
+        )
+
+    class_id = BEST_CLASS_NAMES.index(req.object_name)
+    model = ward_item_seg_yolo_service.get_model()
+
+    try:
+        gripper_vec, arm_joint_info, obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image, mask_contour = \
+            object_detection_service.locate_object_seg_in_base(class_id, req.object_name, model=model)
+
+        b64_image = None
+        if detected_image is not None:
+            success, encoded_img = cv2.imencode('.png', detected_image)
+            if success:
+                b64_image = base64.b64encode(encoded_img).decode('utf-8')
+
+        gripper_vec_list = gripper_vec.tolist() if gripper_vec is not None else None
+        detected = obj_coords is not None
+        return LocateSegResponse(
+            message=f"'{req.object_name}' located successfully." if detected else f"'{req.object_name}' not detected in the current view.",
+            gripper_translation_vector=gripper_vec_list,
+            arm_joint_info=arm_joint_info,
+            object_pose_in_base=obj_coords.tolist() if detected else None,
+            object_pixel_coords=pixel_coords,
+            bbox=bbox,
+            object_yaw_deg=object_yaw_deg,
+            object_yaw_rad=object_yaw_rad,
+            depth_in_meters=depth_in_meters,
+            detection_image_base64=b64_image,
+            mask_contour=mask_contour,
+        )
+    except ObjectDetectionError as e:
+        logger.error(f"Failed to locate ward item (seg): {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /locate-ward-item-seg: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+@router.post("/detect-all-ward-items-seg", response_model=DetectAllWardItemsSegResponse, summary="Detect all ward items using ward_item_seg.pt with segmentation masks")
+def detect_all_ward_items_seg():
+    """
+    - Captures an image from the RealSense camera.
+    - Uses the `ward_item_seg.pt` segmentation model to detect all ward item classes.
+    - Returns bounding boxes, mask contour polygons, poses, and an annotated image (base64 PNG).
+    """
+    try:
+        if not realsense_service.is_initialized:
+            realsense_service._initialize()
+
+        color_image, depth_image = realsense_service.capture_images()
+        model = ward_item_seg_yolo_service.get_model()
+        results = model(color_image, verbose=False)[0]
+        masks = results.masks
+        T_cam_wrist, R_gripper2base, t_gripper2base_vec, _ = object_detection_service.get_detection_transform_context()
+
+        detection_image = color_image.copy()
+        detected_items: list[DetectedWardItemSeg] = []
+
+        for box_idx, box in enumerate(results.boxes):
+            cls_id = int(box.cls[0].item())
+            if cls_id < 0 or cls_id >= len(BEST_CLASS_NAMES):
+                continue
+            conf = float(box.conf[0].item())
+            class_name = BEST_CLASS_NAMES[cls_id]
+
+            obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, mask_contour = \
+                object_detection_service.locate_box_seg_in_base(
+                    box, masks, box_idx, color_image, depth_image,
+                    T_cam_wrist, R_gripper2base, t_gripper2base_vec,
+                )
+
+            detected_items.append(
+                DetectedWardItemSeg(
+                    class_name=class_name,
+                    bbox=bbox,
+                    confidence=round(conf, 4),
+                    mask_contour=mask_contour,
+                    object_pose_in_base=obj_coords.tolist() if obj_coords is not None else None,
+                    object_pixel_coords=pixel_coords,
+                    object_yaw_deg=object_yaw_deg,
+                    object_yaw_rad=object_yaw_rad,
+                    depth_in_meters=depth_in_meters,
+                )
+            )
+
+            if mask_contour:
+                object_detection_service.draw_seg_mask_annotation(detection_image, mask_contour)
+            label = f"{class_name} {conf:.2f}"
+            object_detection_service.draw_detection_annotation(detection_image, bbox, pixel_coords, label)
+            object_detection_service.draw_yaw_annotation(
+                detection_image, bbox, pixel_coords, object_yaw_deg, object_yaw_rad, show_label=True,
+            )
+
+        b64_image = None
+        success, encoded_img = cv2.imencode('.png', detection_image)
+        if success:
+            b64_image = base64.b64encode(encoded_img).decode('utf-8')
+
+        msg = f"Detected {len(detected_items)} ward item(s)." if detected_items else "No ward items detected in the current view."
+        return DetectAllWardItemsSegResponse(message=msg, detected_items=detected_items, detection_image_base64=b64_image)
+
+    except RealSenseError as e:
+        logger.error(f"Camera error in /detect-all-ward-items-seg: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Camera error: {str(e)}")
+    except ObjectDetectionError as e:
+        logger.error(f"Failed in /detect-all-ward-items-seg: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /detect-all-ward-items-seg: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+@router.post(
+    "/detect-all-ward-items-seg-visual",
+    summary="Detect all ward items (seg) and return annotated image with masks",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Returns the camera image with all detected ward items and segmentation masks drawn on it.",
+        }
+    },
+)
+def detect_all_ward_items_seg_visual():
+    """
+    - Delegates to `detect_all_ward_items_seg()` for full detection logic.
+    - Returns the annotated detection image (with mask overlays) as a PNG.
+    """
+    result = detect_all_ward_items_seg()
     if not result.detection_image_base64:
         raise HTTPException(status_code=500, detail="Detection produced no image.")
     image_bytes = base64.b64decode(result.detection_image_base64)

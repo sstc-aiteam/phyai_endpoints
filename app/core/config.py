@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     BOTTLE_CLASS_ID: int = 0
 
     WARD_ITEM_YOLO_MODEL_PATH: str = str(PROJECT_ROOT / "ward_item.pt")
+    WARD_ITEM_SEG_MODEL_PATH: str = str(PROJECT_ROOT / "ward_item_seg.pt")
 
     # Distance from TCP (wrist3) offset for the gripper length along the camera's forward axis
     GRIPPER_LEN_OFFSET_IN_METERS: float = 0.15

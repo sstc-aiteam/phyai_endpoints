@@ -247,10 +247,20 @@ class ObjectDetectionService:
         T_cam_wrist,
         R_gripper2base,
         t_gripper2base_vec,
+        masks=None,
+        box_idx: int | None = None,
     ):
         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
         bbox = [int(x1), int(y1), int(x2), int(y2)]
-        u, v = self._get_box_center(box)
+
+        if masks is not None and box_idx is not None:
+            centroid = self._get_mask_centroid(masks, box_idx)
+            u, v = centroid if centroid is not None else self._get_box_center(box)
+            mask_contour = masks.xy[box_idx].astype(int).tolist() if box_idx < len(masks.xy) else None
+        else:
+            u, v = self._get_box_center(box)
+            mask_contour = None
+
         depth_in_meters, p_cam = self._get_3d_point_from_pixel(depth_image, u, v)
         object_yaw_deg, object_yaw_rad = self.calc_yaw_from_bbox_pca(color_image, bbox)
 
@@ -265,7 +275,7 @@ class ObjectDetectionService:
             p_base = T_wrist_base @ T_cam_wrist @ p_cam_homog
             object_coords = p_base[:3]
 
-        return object_coords, [u, v], bbox, object_yaw_deg, object_yaw_rad, depth_in_meters
+        return object_coords, [u, v], bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, mask_contour
 
     ## 
     # Main method to locate object and calculate its pose in the robot's base frame
@@ -307,8 +317,8 @@ class ObjectDetectionService:
             depth_in_meters = None
             self.draw_view_grid(detection_image)
 
-            for box in self._get_candidate_boxes(results, object_class_id):
-                object_coords, candidate_pixel_coords, candidate_bbox, candidate_yaw_deg, candidate_yaw_rad, candidate_depth = self.locate_box_in_base(
+            for _, box in self._get_candidate_boxes_with_idx(results, object_class_id):
+                object_coords, candidate_pixel_coords, candidate_bbox, candidate_yaw_deg, candidate_yaw_rad, candidate_depth, _ = self.locate_box_in_base(
                     box,
                     color_image,
                     depth_image,
@@ -369,29 +379,116 @@ class ObjectDetectionService:
         """
         return [np.pi, 0.0, 0.0]
 
-    def _get_candidate_boxes(self, results, object_class_id: int):
-        """Return matching boxes ordered by confidence."""
-        candidates = []
-
-        for box in results.boxes:
-            if int(box.cls) != object_class_id:
-                continue
-
-            confidence = float(box.conf) if box.conf is not None else 1.0
-            candidates.append((confidence, box))
-
-        candidates.sort(key=lambda candidate: candidate[0], reverse=True)
-        return [box for _, box in candidates]
-
     def _get_best_box(self, results, object_class_id: int):
         """Return the highest-confidence matching box, or None."""
-        candidates = self._get_candidate_boxes(results, object_class_id)
-        return candidates[0] if candidates else None
+        candidates = self._get_candidate_boxes_with_idx(results, object_class_id)
+        return candidates[0][1] if candidates else None
 
     def _get_box_center(self, box) -> tuple[int, int]:
         """Return (u, v) pixel center of a YOLO bounding box."""
         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
         return int((x1 + x2) / 2), int((y1 + y2) / 2)
+
+    def _get_mask_centroid(self, masks, idx: int) -> tuple[int, int] | None:
+        """Return (u, v) centroid of the segmentation mask at index idx, or None."""
+        if masks is None or idx >= len(masks.xy):
+            return None
+        contour = masks.xy[idx]
+        if len(contour) == 0:
+            return None
+        return int(np.mean(contour[:, 0])), int(np.mean(contour[:, 1]))
+
+    def _get_candidate_boxes_with_idx(self, results, object_class_id: int):
+        """Return (original_idx, box) pairs for matching boxes, ordered by confidence."""
+        candidates = []
+        for idx, box in enumerate(results.boxes):
+            if int(box.cls) != object_class_id:
+                continue
+            confidence = float(box.conf) if box.conf is not None else 1.0
+            candidates.append((confidence, idx, box))
+        candidates.sort(key=lambda c: c[0], reverse=True)
+        return [(idx, box) for _, idx, box in candidates]
+
+    def draw_seg_mask_annotation(self, image, mask_contour: list, color=(0, 255, 0), alpha=0.4):
+        if image is None or not mask_contour:
+            return
+        pts = np.array(mask_contour, dtype=np.int32)
+        overlay = image.copy()
+        cv2.fillPoly(overlay, [pts], color)
+        cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0, image)
+        cv2.polylines(image, [pts], isClosed=True, color=color, thickness=2)
+
+    def locate_object_seg_in_base(self, object_class_id: int, object_name: str, model, color_image=None, depth_image=None):
+        """Like locate_object_in_base but for segmentation models.
+
+        Uses mask centroid for depth sampling when available.
+        Returns the same tuple as locate_object_in_base plus mask_contour as the last element.
+        """
+        if not os.path.exists(settings.CALIBRATION_FILE):
+            raise ObjectDetectionError(f"Calibration file '{settings.CALIBRATION_FILE}' not found. Please run a hand-eye calibration first.")
+
+        try:
+            T_cam_wrist, R_gripper2base, t_gripper2base_vec, arm_joint_info = self.get_detection_transform_context()
+
+            if not realsense_service.is_initialized:
+                realsense_service._initialize()
+
+            if color_image is None or depth_image is None:
+                color_image, depth_image = realsense_service.capture_images()
+
+            detection_image = color_image.copy()
+            results = model(color_image, verbose=False)[0]
+            masks = results.masks
+
+            object_coords = None
+            pixel_coords = None
+            bbox = None
+            object_yaw_deg = None
+            object_yaw_rad = None
+            depth_in_meters = None
+            mask_contour = None
+            self.draw_view_grid(detection_image)
+
+            for box_idx, box in self._get_candidate_boxes_with_idx(results, object_class_id):
+                object_coords, candidate_pixel_coords, candidate_bbox, candidate_yaw_deg, candidate_yaw_rad, candidate_depth, candidate_mask = self.locate_box_in_base(
+                    box, color_image, depth_image, T_cam_wrist, R_gripper2base, t_gripper2base_vec, masks, box_idx,
+                )
+                if object_coords is None:
+                    continue
+
+                bbox = candidate_bbox
+                pixel_coords = candidate_pixel_coords
+                depth_in_meters = candidate_depth
+                object_yaw_deg = candidate_yaw_deg
+                object_yaw_rad = candidate_yaw_rad
+                mask_contour = candidate_mask
+
+                if mask_contour:
+                    self.draw_seg_mask_annotation(detection_image, mask_contour)
+
+                x1, y1, x2, y2 = bbox
+                u, v = pixel_coords
+                self.draw_detection_annotation(detection_image, bbox, pixel_coords)
+                image_h, image_w = detection_image.shape[:2]
+                image_center = (image_w // 2, image_h // 2)
+                dx_pixels = u - image_center[0]
+                dy_pixels = v - image_center[1]
+                cv2.line(detection_image, image_center, (u, v), (0, 255, 255), 2)
+                cv2.putText(detection_image, f"dx:{dx_pixels} dy:{dy_pixels}", (int(x1), min(image_h - 10, int(y2) + 22)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+                self.draw_yaw_annotation(detection_image, bbox, pixel_coords, object_yaw_deg, object_yaw_rad, show_label=True, label_position="above")
+
+                logger.info(f"Found {object_name} at pixel ({u}, {v}) with depth {depth_in_meters:.3f}m.")
+                logger.info(f"Estimated {object_name} yaw: {object_yaw_deg} degrees.")
+                logger.info(f"Calculated base coordinates: {object_coords.tolist()}")
+                break
+
+            return t_gripper2base_vec, arm_joint_info, object_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detection_image, mask_contour
+
+        except (HandEyeCalibrationError, RealSenseError) as e:
+            raise ObjectDetectionError(f"Error during object detection: {e}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error in locate_object_seg_in_base: {e}", exc_info=True)
+            raise ObjectDetectionError(f"An unexpected error occurred: {e}") from e
 
     def adjust_gripper_parallel(self, max_iterations=10):
         """
