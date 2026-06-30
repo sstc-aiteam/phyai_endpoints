@@ -34,13 +34,8 @@ class GraspResponse(BaseModel):
     message: str
     executed_grasp_pose: list[float] | None
 
-BEST_CLASS_NAMES = [
-    'ac_remotecontrol', 'bottle_alcohol_spray', 'cotton_swab', 'cotton_swabs_pp',
-    'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb',
-]
-
 class LocateWardItemRequest(BaseModel):
-    object_name: str = Field(..., description=f"Name of ward item to detect. Valid values: {BEST_CLASS_NAMES}")
+    object_name: str = Field(..., description=f"Name of ward item to detect. Valid values: {settings.WARD_ITEM_CLASS_NAMES}")
 
 class CenterOnObjectRequest(BaseModel):
     object_class_id: int = Field(settings.BOTTLE_CLASS_ID, description="The class ID of the object to detect.")
@@ -70,12 +65,12 @@ class DetectAllWardItemsResponse(BaseModel):
 class LocateSegResponse(LocateResponse):
     mask_contour: list[list[int]] | None = None
 
-class DetectedWardItemSeg(DetectedWardItem):
+class SegWardItem(DetectedWardItem):
     mask_contour: list[list[int]] | None = None
 
-class DetectAllWardItemsSegResponse(BaseModel):
+class SegAllWardItemsResponse(BaseModel):
     message: str
-    detected_items: list[DetectedWardItemSeg]
+    detected_items: list[SegWardItem]
     detection_image_base64: str | None = None
 
 
@@ -356,13 +351,13 @@ def detect_ward_item(req: LocateWardItemRequest):
     - Uses the `ward_item.pt` YOLOv26n model to detect the requested ward item.
     - Calculates the 3D position in the robot's base frame using the stored hand-eye calibration.
     """
-    if req.object_name not in BEST_CLASS_NAMES:
+    if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
         raise HTTPException(
             status_code=422,
-            detail=f"Invalid object_name '{req.object_name}'. Valid values: {BEST_CLASS_NAMES}",
+            detail=f"Invalid object_name '{req.object_name}'. Valid values: {settings.WARD_ITEM_CLASS_NAMES}",
         )
 
-    class_id = BEST_CLASS_NAMES.index(req.object_name)
+    class_id = settings.WARD_ITEM_CLASS_NAMES.index(req.object_name)
     model = ward_item_yolo_service.get_model()
 
     try:
@@ -419,10 +414,10 @@ def detect_all_ward_items():
 
         for box in results.boxes:
             cls_id = int(box.cls[0].item())
-            if cls_id < 0 or cls_id >= len(BEST_CLASS_NAMES):
+            if cls_id < 0 or cls_id >= len(settings.WARD_ITEM_CLASS_NAMES):
                 continue
             conf = float(box.conf[0].item())
-            class_name = BEST_CLASS_NAMES[cls_id]
+            class_name = settings.WARD_ITEM_CLASS_NAMES[cls_id]
             obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, _ = object_detection_service.locate_box_in_base(
                 box,
                 color_image,
@@ -507,13 +502,13 @@ def segment_ward_item(req: LocateWardItemRequest):
     - Pixel coordinates are derived from the mask centroid for higher accuracy.
     - Returns the 3D pose in the robot's base frame plus the mask contour polygon.
     """
-    if req.object_name not in BEST_CLASS_NAMES:
+    if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
         raise HTTPException(
             status_code=422,
-            detail=f"Invalid object_name '{req.object_name}'. Valid values: {BEST_CLASS_NAMES}",
+            detail=f"Invalid object_name '{req.object_name}'. Valid values: {settings.WARD_ITEM_CLASS_NAMES}",
         )
 
-    class_id = BEST_CLASS_NAMES.index(req.object_name)
+    class_id = settings.WARD_ITEM_CLASS_NAMES.index(req.object_name)
     model = ward_item_seg_yolo_service.get_model()
 
     try:
@@ -549,7 +544,7 @@ def segment_ward_item(req: LocateWardItemRequest):
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
-@router.post("/segment-all-ward-items", response_model=DetectAllWardItemsSegResponse, summary="Detect all ward items using ward_item_seg.pt with segmentation masks")
+@router.post("/segment-all-ward-items", response_model=SegAllWardItemsResponse, summary="Detect all ward items using ward_item_seg.pt with segmentation masks")
 def segment_all_ward_items():
     """
     - Captures an image from the RealSense camera.
@@ -567,14 +562,14 @@ def segment_all_ward_items():
         T_cam_wrist, R_gripper2base, t_gripper2base_vec, _ = object_detection_service.get_detection_transform_context()
 
         detection_image = color_image.copy()
-        detected_items: list[DetectedWardItemSeg] = []
+        detected_items: list[SegWardItem] = []
 
         for box_idx, box in enumerate(results.boxes):
             cls_id = int(box.cls[0].item())
-            if cls_id < 0 or cls_id >= len(BEST_CLASS_NAMES):
+            if cls_id < 0 or cls_id >= len(settings.WARD_ITEM_CLASS_NAMES):
                 continue
             conf = float(box.conf[0].item())
-            class_name = BEST_CLASS_NAMES[cls_id]
+            class_name = settings.WARD_ITEM_CLASS_NAMES[cls_id]
 
             obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, mask_contour = \
                 object_detection_service.locate_box_in_base(
@@ -584,7 +579,7 @@ def segment_all_ward_items():
                 )
 
             detected_items.append(
-                DetectedWardItemSeg(
+                SegWardItem(
                     class_name=class_name,
                     bbox=bbox,
                     confidence=round(conf, 4),
@@ -611,7 +606,7 @@ def segment_all_ward_items():
             b64_image = base64.b64encode(encoded_img).decode('utf-8')
 
         msg = f"Detected {len(detected_items)} ward item(s)." if detected_items else "No ward items detected in the current view."
-        return DetectAllWardItemsSegResponse(message=msg, detected_items=detected_items, detection_image_base64=b64_image)
+        return SegAllWardItemsResponse(message=msg, detected_items=detected_items, detection_image_base64=b64_image)
 
     except RealSenseError as e:
         logger.error(f"Camera error in /segment-all-ward-items: {e}", exc_info=True)

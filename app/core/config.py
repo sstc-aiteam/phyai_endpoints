@@ -25,12 +25,18 @@ class Settings(BaseSettings):
     # Hand-eye calibration file
     CALIBRATION_FILE: str = str(PROJECT_ROOT / "handeye_result.npy")
 
-    # Object detection model settings
+    # Bottle object detection model settings
     BOTTLE_YOLO_MODEL_PATH: str = str(PROJECT_ROOT / "bottle.pt")
     BOTTLE_CLASS_ID: int = 0
-
-    WARD_ITEM_YOLO_MODEL_PATH: str = str(PROJECT_ROOT / "ward_item.pt")
+    
+    # Ward item detection/segmentation model settings
+    WARD_ITEM_DET_MODEL_PATH: str = str(PROJECT_ROOT / "ward_item.pt")
     WARD_ITEM_SEG_MODEL_PATH: str = str(PROJECT_ROOT / "ward_item_seg.pt")
+
+    WARD_ITEM_CLASS_NAMES: list[str] = [
+        'ac_remotecontrol', 'bottle_alcohol_spray', 'chair_surface', 'cotton_swab', 'cotton_swabs_pp',
+        'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb'
+    ]
 
     # Distance from TCP (wrist3) offset for the gripper length along the camera's forward axis
     GRIPPER_LEN_OFFSET_IN_METERS: float = 0.15

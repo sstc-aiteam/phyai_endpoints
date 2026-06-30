@@ -21,5 +21,5 @@ class YoloService:
         return self._model
 
 bottle_yolo_service = YoloService(settings.BOTTLE_YOLO_MODEL_PATH)
-ward_item_yolo_service = YoloService(settings.WARD_ITEM_YOLO_MODEL_PATH)
+ward_item_yolo_service = YoloService(settings.WARD_ITEM_DET_MODEL_PATH)
 ward_item_seg_yolo_service = YoloService(settings.WARD_ITEM_SEG_MODEL_PATH)
