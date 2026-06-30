@@ -631,7 +631,7 @@ def segment_ward_item_pointcloud(
 
 
 @router.post(
-    "/segment-item-pointcloud-visual",
+    "/segment-ward-item-pointcloud-visual",
     summary="Preview the seg mask and depth filter used for segment-item-pointcloud",
     response_class=Response,
     responses={
@@ -737,7 +737,7 @@ def segment_ward_item_pointcloud_visual(
         logger.error(f"Failed to render segment item point cloud visual: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected error in /segment-item-pointcloud-visual: {e}", exc_info=True)
+        logger.error(f"Unexpected error in /segment-ward-item-pointcloud-visual: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
