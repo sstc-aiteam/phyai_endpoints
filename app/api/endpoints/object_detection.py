@@ -546,6 +546,201 @@ def segment_ward_item(req: LocateWardItemRequest):
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
+@router.post(
+    "/segment-item-pointcloud",
+    summary="Segment a ward item and return its mask point cloud",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/octet-stream": {}},
+            "description": "Returns the detected item segmentation mask as a colored binary little-endian PLY point cloud.",
+        }
+    },
+)
+def segment_ward_item_pointcloud(
+    req: LocateWardItemRequest,
+    depth_margin_m: float | None = Query(
+        0.08,
+        description="Keep only points within +/- this many meters from the detected center depth. Set to 0 to keep the full mask.",
+    ),
+):
+    """
+    Segments the ward item using the seg model, then returns the same frame's RealSense
+    point cloud cropped to the item's mask contour and filtered by its depth.
+    """
+    if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid object_name '{req.object_name}'. Valid values: {settings.WARD_ITEM_CLASS_NAMES}",
+        )
+
+    class_id = settings.WARD_ITEM_CLASS_NAMES.index(req.object_name)
+    model = ward_item_seg_yolo_service.get_model()
+
+    try:
+        color_frame, depth_frame = realsense_service.capture_aligned_frames()
+        color_image = np.asanyarray(color_frame.get_data())
+        depth_image = np.asanyarray(depth_frame.get_data())
+
+        _, _, obj_coords, _, bbox, _, _, depth_in_meters, _, mask_contour = \
+            object_detection_service.locate_object_in_base(
+                class_id,
+                req.object_name,
+                model,
+                color_image=color_image,
+                depth_image=depth_image,
+            )
+
+        if obj_coords is None or bbox is None:
+            raise HTTPException(status_code=404, detail=f"'{req.object_name}' not detected in the current view.")
+
+        vertices, colors = realsense_service.point_cloud_from_frames(
+            color_frame,
+            depth_frame,
+            bbox=bbox,
+            depth_center_m=depth_in_meters,
+            depth_margin_m=None if depth_margin_m == 0 else depth_margin_m,
+            mask_contour=mask_contour if mask_contour else None,
+        )
+        if len(vertices) == 0:
+            raise HTTPException(status_code=500, detail=f"Detected mask/bbox has no valid depth points: {bbox}")
+
+        ply_bytes = encode_binary_ply(vertices, colors)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"{req.object_name}_pointcloud_{timestamp}.ply"
+
+        return Response(
+            content=ply_bytes,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-PointCloud-BBox": ",".join(map(str, bbox)),
+                "X-PointCloud-Depth-Meters": f"{depth_in_meters:.6f}",
+                "X-PointCloud-Depth-Margin-Meters": "" if depth_margin_m is None else f"{depth_margin_m:.6f}",
+                "X-PointCloud-Mask-Used": "true" if mask_contour else "false",
+            },
+        )
+    except HTTPException:
+        raise
+    except ObjectDetectionError as e:
+        logger.error(f"Failed to segment item point cloud: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /segment-item-pointcloud: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+@router.post(
+    "/segment-item-pointcloud-visual",
+    summary="Preview the seg mask and depth filter used for segment-item-pointcloud",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Returns a PNG preview of the segmentation mask and depth-filtered pixels used for point cloud generation.",
+        }
+    },
+)
+def segment_ward_item_pointcloud_visual(
+    req: LocateWardItemRequest,
+    depth_margin_m: float = Query(
+        0.08,
+        description="Show points within +/- this many meters from the detected center depth.",
+    ),
+):
+    """
+    Shows the seg mask polygon and depth-filtered pixels that would become the item point cloud.
+    """
+    if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid object_name '{req.object_name}'. Valid values: {settings.WARD_ITEM_CLASS_NAMES}",
+        )
+
+    class_id = settings.WARD_ITEM_CLASS_NAMES.index(req.object_name)
+    model = ward_item_seg_yolo_service.get_model()
+
+    try:
+        color_frame, depth_frame = realsense_service.capture_aligned_frames()
+        color_image = np.asanyarray(color_frame.get_data())
+        depth_image = np.asanyarray(depth_frame.get_data())
+
+        _, _, obj_coords, pixel_coords, bbox, _, _, depth_in_meters, _, mask_contour = \
+            object_detection_service.locate_object_in_base(
+                class_id,
+                req.object_name,
+                model,
+                color_image=color_image,
+                depth_image=depth_image,
+            )
+
+        if obj_coords is None or bbox is None:
+            raise HTTPException(status_code=404, detail=f"'{req.object_name}' not detected in the current view.")
+
+        height, width = depth_image.shape[:2]
+        depth_m = depth_image.astype(np.float32) * realsense_service.depth_scale
+
+        if mask_contour:
+            poly = np.array(mask_contour, dtype=np.int32)
+            spatial_mask = np.zeros((height, width), dtype=bool)
+            fill = np.zeros((height, width), dtype=np.uint8)
+            cv2.fillPoly(fill, [poly], 1)
+            spatial_mask = fill.astype(bool)
+        else:
+            x1, y1, x2, y2 = map(int, bbox)
+            x1 = max(0, min(x1, width - 1))
+            x2 = max(0, min(x2, width))
+            y1 = max(0, min(y1, height - 1))
+            y2 = max(0, min(y2, height))
+            spatial_mask = np.zeros((height, width), dtype=bool)
+            spatial_mask[y1:y2, x1:x2] = True
+
+        depth_filter = (
+            (depth_m > 0)
+            & (depth_m >= max(0.0, depth_in_meters - depth_margin_m))
+            & (depth_m <= depth_in_meters + depth_margin_m)
+        )
+        active_mask = spatial_mask & depth_filter
+
+        preview = color_image.copy()
+        overlay = preview.copy()
+        overlay[active_mask] = (0, 255, 0)
+        cv2.addWeighted(overlay, 0.45, preview, 0.55, 0, preview)
+
+        if mask_contour:
+            cv2.polylines(preview, [np.array(mask_contour, dtype=np.int32)], isClosed=True, color=(0, 255, 0), thickness=2)
+            label_x, label_y = int(mask_contour[0][0]), int(mask_contour[0][1])
+        else:
+            x1, y1, x2, y2 = map(int, bbox)
+            cv2.rectangle(preview, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            label_x, label_y = x1, y1
+
+        cv2.putText(
+            preview,
+            f"{req.object_name} depth {depth_in_meters:.3f}m +/- {depth_margin_m:.3f}m",
+            (label_x, max(20, label_y - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+
+        success, encoded_img = cv2.imencode(".png", preview)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to encode mask preview to PNG")
+
+        return Response(content=encoded_img.tobytes(), media_type="image/png")
+    except HTTPException:
+        raise
+    except ObjectDetectionError as e:
+        logger.error(f"Failed to render segment item point cloud visual: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /segment-item-pointcloud-visual: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
 @router.post("/segment-all-ward-items", response_model=SegAllWardItemsResponse, summary="Detect all ward items using ward_item_seg.pt with segmentation masks")
 def segment_all_ward_items():
     """
