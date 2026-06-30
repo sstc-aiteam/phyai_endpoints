@@ -38,6 +38,9 @@ class Settings(BaseSettings):
         'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb'
     ]
 
+    # Classes excluded from drawing
+    ANNOTATION_SKIP_CLASSES: list[str] = ["chair_surface"]
+
     # Distance from TCP (wrist3) offset for the gripper length along the camera's forward axis
     GRIPPER_LEN_OFFSET_IN_METERS: float = 0.15
 

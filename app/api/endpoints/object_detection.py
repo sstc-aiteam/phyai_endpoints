@@ -9,6 +9,7 @@ from datetime import datetime
 
 from app.core.config import settings
 from app.services.object_detection_service import object_detection_service, ObjectDetectionError
+from app.util.annotation import draw_detection_annotation, draw_yaw_annotation, draw_seg_mask_annotation, palette_color
 from app.services.pointcloud import encode_binary_ply
 from app.services.yolo_service import ward_item_yolo_service, ward_item_seg_yolo_service, bottle_yolo_service
 from app.services.realsense import realsense_service, RealSenseError
@@ -409,7 +410,7 @@ def detect_all_ward_items():
         detection_image = color_image.copy()
         detected_items: list[WardItem] = []
 
-        for box in results.boxes:
+        for box_idx, box in enumerate(results.boxes):
             cls_id = int(box.cls[0].item())
             if cls_id < 0 or cls_id >= len(settings.WARD_ITEM_CLASS_NAMES):
                 continue
@@ -437,15 +438,19 @@ def detect_all_ward_items():
                 )
             )
 
+            color = palette_color(box_idx)
             label = f"{class_name} {conf:.2f}"
-            object_detection_service.draw_detection_annotation(detection_image, bbox, pixel_coords, label)
-            object_detection_service.draw_yaw_annotation(
+            draw_detection_annotation(detection_image, bbox, pixel_coords, label, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES)
+            draw_yaw_annotation(
                 detection_image,
                 bbox,
                 pixel_coords,
                 object_yaw_deg,
                 object_yaw_rad,
                 show_label=True,
+                color=color,
+                class_name=class_name,
+                skip_classes=settings.ANNOTATION_SKIP_CLASSES,
             )
 
         b64_image = None
@@ -589,12 +594,13 @@ def segment_all_ward_items():
                 )
             )
 
-            if mask_contour:
-                object_detection_service.draw_seg_mask_annotation(detection_image, mask_contour)
+            color = palette_color(box_idx)
             label = f"{class_name} {conf:.2f}"
-            object_detection_service.draw_detection_annotation(detection_image, bbox, pixel_coords, label)
-            object_detection_service.draw_yaw_annotation(
-                detection_image, bbox, pixel_coords, object_yaw_deg, object_yaw_rad, show_label=True,
+            if mask_contour:
+                draw_seg_mask_annotation(detection_image, mask_contour, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES)
+            draw_detection_annotation(detection_image, bbox, pixel_coords, label, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES)
+            draw_yaw_annotation(
+                detection_image, bbox, pixel_coords, object_yaw_deg, object_yaw_rad, show_label=True, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES,
             )
 
         b64_image = None

@@ -15,6 +15,9 @@ from scipy.spatial.transform import Rotation as R
 
 logger = logging.getLogger(__name__)
 
+from app.util.annotation import draw_detection_annotation, draw_yaw_annotation, draw_seg_mask_annotation, palette_color
+
+
 class ObjectDetectionError(Exception):
     pass
 
@@ -113,87 +116,6 @@ class ObjectDetectionService:
             yaw_deg += 180
 
         return yaw_deg, math.radians(yaw_deg)
-
-    def draw_detection_annotation(self, image, bbox, pixel_coords=None, label=None):
-        if image is None or bbox is None:
-            return
-
-        x1, y1, x2, y2 = map(int, bbox)
-        if pixel_coords is None:
-            u = int((x1 + x2) / 2)
-            v = int((y1 + y2) / 2)
-        else:
-            u, v = map(int, pixel_coords)
-
-        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.circle(image, (u, v), 5, (0, 0, 255), -1)
-        if label:
-            cv2.putText(
-                image,
-                label,
-                (x1, max(y1 - 8, 0)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 255, 0),
-                2,
-            )
-
-    def draw_yaw_annotation(
-        self,
-        image,
-        bbox,
-        pixel_coords,
-        object_yaw_deg,
-        object_yaw_rad,
-        show_label=False,
-        show_unavailable_label=False,
-        label_position="below",
-    ):
-        if image is None or bbox is None or pixel_coords is None:
-            return
-
-        x1, y1, x2, y2 = map(int, bbox)
-        u, v = map(int, pixel_coords)
-        image_h = image.shape[0]
-
-        if label_position == "above":
-            label_origin = (x1, max(20, y1 - 10))
-        else:
-            label_origin = (x1, min(image_h - 10, y2 + 22))
-
-        if object_yaw_deg is None or object_yaw_rad is None:
-            if show_unavailable_label:
-                cv2.putText(
-                    image,
-                    "yaw: n/a",
-                    label_origin,
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    (255, 0, 255),
-                    2,
-                )
-            return
-
-        axis_len = int(max(x2 - x1, y2 - y1) * 0.45)
-        dx = math.sin(object_yaw_rad) * axis_len
-        dy = math.cos(object_yaw_rad) * axis_len
-        cv2.line(
-            image,
-            (int(u - dx), int(v - dy)),
-            (int(u + dx), int(v + dy)),
-            (255, 0, 255),
-            2,
-        )
-        if show_label:
-            cv2.putText(
-                image,
-                f"yaw: {object_yaw_deg:.1f} deg",
-                label_origin,
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (255, 0, 255),
-                2,
-            )
 
     def _get_3d_point_from_pixel(self, depth_image, u, v):
         """
@@ -341,19 +263,20 @@ class ObjectDetectionService:
                 object_yaw_rad = candidate_yaw_rad
                 mask_contour = candidate_mask
 
+                color = palette_color(box_idx)
                 if mask_contour:
-                    self.draw_seg_mask_annotation(detection_image, mask_contour)
+                    draw_seg_mask_annotation(detection_image, mask_contour, color=color)
 
                 x1, y1, x2, y2 = bbox
                 u, v = pixel_coords
-                self.draw_detection_annotation(detection_image, bbox, pixel_coords)
+                draw_detection_annotation(detection_image, bbox, pixel_coords, color=color)
                 image_h, image_w = detection_image.shape[:2]
                 image_center = (image_w // 2, image_h // 2)
                 dx_pixels = u - image_center[0]
                 dy_pixels = v - image_center[1]
-                cv2.line(detection_image, image_center, (u, v), (0, 255, 255), 2)
-                cv2.putText(detection_image, f"dx:{dx_pixels} dy:{dy_pixels}", (int(x1), min(image_h - 10, int(y2) + 22)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
-                self.draw_yaw_annotation(
+                cv2.line(detection_image, image_center, (u, v), color, 2)
+                cv2.putText(detection_image, f"dx:{dx_pixels} dy:{dy_pixels}", (int(x1), min(image_h - 10, int(y2) + 22)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+                draw_yaw_annotation(
                     detection_image,
                     bbox,
                     pixel_coords,
@@ -361,6 +284,7 @@ class ObjectDetectionService:
                     object_yaw_rad,
                     show_label=True,
                     label_position="above",
+                    color=color,
                 )
 
                 logger.info(f"Found {object_name} at pixel ({u}, {v}) with depth {depth_in_meters:.3f}m.")
@@ -416,15 +340,6 @@ class ObjectDetectionService:
             candidates.append((confidence, idx, box))
         candidates.sort(key=lambda c: c[0], reverse=True)
         return [(idx, box) for _, idx, box in candidates]
-
-    def draw_seg_mask_annotation(self, image, mask_contour: list, color=(0, 255, 0), alpha=0.4):
-        if image is None or not mask_contour:
-            return
-        pts = np.array(mask_contour, dtype=np.int32)
-        overlay = image.copy()
-        cv2.fillPoly(overlay, [pts], color)
-        cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0, image)
-        cv2.polylines(image, [pts], isClosed=True, color=color, thickness=2)
 
     def adjust_gripper_parallel(self, max_iterations=10):
         """
