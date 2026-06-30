@@ -62,7 +62,7 @@ class DetectAllWardItemsResponse(BaseModel):
     detected_items: list[DetectedWardItem]
     detection_image_base64: str | None = None
 
-class LocateSegResponse(LocateResponse):
+class SegResponse(LocateResponse):
     mask_contour: list[list[int]] | None = None
 
 class SegWardItem(DetectedWardItem):
@@ -493,7 +493,7 @@ def detect_all_ward_items_visual():
     return Response(content=image_bytes, media_type="image/png")
 
 
-@router.post("/segment-ward-item", response_model=LocateSegResponse, summary="Locate a specific ward item using ward_item_seg.pt and return its pose with mask")
+@router.post("/segment-ward-item", response_model=SegResponse, summary="Locate a specific ward item using ward_item_seg.pt and return its pose with mask")
 def segment_ward_item(req: LocateWardItemRequest):
     """
     - Accepts an `object_name` from the same set as `/detect-ward-item`.
@@ -523,7 +523,7 @@ def segment_ward_item(req: LocateWardItemRequest):
 
         gripper_vec_list = gripper_vec.tolist() if gripper_vec is not None else None
         detected = obj_coords is not None
-        return LocateSegResponse(
+        return SegResponse(
             message=f"'{req.object_name}' located successfully." if detected else f"'{req.object_name}' not detected in the current view.",
             gripper_translation_vector=gripper_vec_list,
             arm_joint_info=arm_joint_info,
