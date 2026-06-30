@@ -546,8 +546,106 @@ def segment_ward_item(req: LocateWardItemRequest):
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
+@router.post("/segment-all-ward-items", response_model=SegAllWardItemsResponse, summary="Detect all ward items using ward_item_seg.pt with segmentation masks")
+def segment_all_ward_items():
+    """
+    - Captures an image from the RealSense camera.
+    - Uses the `ward_item_seg.pt` segmentation model to detect all ward item classes.
+    - Returns bounding boxes, mask contour polygons, poses, and an annotated image (base64 PNG).
+    """
+    try:
+        if not realsense_service.is_initialized:
+            realsense_service._initialize()
+
+        color_image, depth_image = realsense_service.capture_images()
+        model = ward_item_seg_yolo_service.get_model()
+        results = model(color_image, verbose=False)[0]
+        masks = results.masks
+        T_cam_wrist, R_gripper2base, t_gripper2base_vec, _ = object_detection_service.get_detection_transform_context()
+
+        detection_image = color_image.copy()
+        detected_items: list[SegWardItem] = []
+
+        for box_idx, box in enumerate(results.boxes):
+            cls_id = int(box.cls[0].item())
+            if cls_id < 0 or cls_id >= len(settings.WARD_ITEM_CLASS_NAMES):
+                continue
+            conf = float(box.conf[0].item())
+            class_name = settings.WARD_ITEM_CLASS_NAMES[cls_id]
+
+            obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, mask_contour = \
+                object_detection_service.locate_box_in_base(
+                    box, color_image, depth_image,
+                    T_cam_wrist, R_gripper2base, t_gripper2base_vec,
+                    masks, box_idx,
+                )
+
+            detected_items.append(
+                SegWardItem(
+                    class_name=class_name,
+                    bbox=bbox,
+                    confidence=round(conf, 4),
+                    mask_contour=mask_contour,
+                    object_pose_in_base=obj_coords.tolist() if obj_coords is not None else None,
+                    object_pixel_coords=pixel_coords,
+                    object_yaw_deg=object_yaw_deg,
+                    object_yaw_rad=object_yaw_rad,
+                    depth_in_meters=depth_in_meters,
+                )
+            )
+
+            color = palette_color(box_idx)
+            label = f"{class_name} {conf:.2f}"
+            if mask_contour:
+                draw_seg_mask_annotation(detection_image, mask_contour, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES)
+            draw_detection_annotation(detection_image, bbox, pixel_coords, label, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES)
+            draw_yaw_annotation(
+                detection_image, bbox, pixel_coords, object_yaw_deg, object_yaw_rad, show_label=True, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES,
+            )
+
+        b64_image = None
+        success, encoded_img = cv2.imencode('.png', detection_image)
+        if success:
+            b64_image = base64.b64encode(encoded_img).decode('utf-8')
+
+        msg = f"Detected {len(detected_items)} ward item(s)." if detected_items else "No ward items detected in the current view."
+        return SegAllWardItemsResponse(message=msg, detected_items=detected_items, detection_image_base64=b64_image)
+
+    except RealSenseError as e:
+        logger.error(f"Camera error in /segment-all-ward-items: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Camera error: {str(e)}")
+    except ObjectDetectionError as e:
+        logger.error(f"Failed in /segment-all-ward-items: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /segment-all-ward-items: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
 @router.post(
-    "/segment-item-pointcloud",
+    "/segment-all-ward-items-visual",
+    summary="Detect all ward items (seg) and return annotated image with masks",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Returns the camera image with all detected ward items and segmentation masks drawn on it.",
+        }
+    },
+)
+def segment_all_ward_items_visual():
+    """
+    - Delegates to `segment_all_ward_items()` for full detection logic.
+    - Returns the annotated detection image (with mask overlays) as a PNG.
+    """
+    result = segment_all_ward_items()
+    if not result.detection_image_base64:
+        raise HTTPException(status_code=500, detail="Detection produced no image.")
+    image_bytes = base64.b64decode(result.detection_image_base64)
+    return Response(content=image_bytes, media_type="image/png")
+
+@router.post(
+    "/segment-ward-item-pointcloud",
     summary="Segment a ward item and return its mask point cloud",
     response_class=Response,
     responses={
@@ -626,13 +724,13 @@ def segment_ward_item_pointcloud(
         logger.error(f"Failed to segment item point cloud: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected error in /segment-item-pointcloud: {e}", exc_info=True)
+        logger.error(f"Unexpected error in /segment-ward-item-pointcloud: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
 @router.post(
     "/segment-ward-item-pointcloud-visual",
-    summary="Preview the seg mask and depth filter used for segment-item-pointcloud",
+    summary="Preview the seg mask and depth filter used for segment-ward-item-pointcloud",
     response_class=Response,
     responses={
         200: {
@@ -739,105 +837,6 @@ def segment_ward_item_pointcloud_visual(
     except Exception as e:
         logger.error(f"Unexpected error in /segment-ward-item-pointcloud-visual: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
-
-
-@router.post("/segment-all-ward-items", response_model=SegAllWardItemsResponse, summary="Detect all ward items using ward_item_seg.pt with segmentation masks")
-def segment_all_ward_items():
-    """
-    - Captures an image from the RealSense camera.
-    - Uses the `ward_item_seg.pt` segmentation model to detect all ward item classes.
-    - Returns bounding boxes, mask contour polygons, poses, and an annotated image (base64 PNG).
-    """
-    try:
-        if not realsense_service.is_initialized:
-            realsense_service._initialize()
-
-        color_image, depth_image = realsense_service.capture_images()
-        model = ward_item_seg_yolo_service.get_model()
-        results = model(color_image, verbose=False)[0]
-        masks = results.masks
-        T_cam_wrist, R_gripper2base, t_gripper2base_vec, _ = object_detection_service.get_detection_transform_context()
-
-        detection_image = color_image.copy()
-        detected_items: list[SegWardItem] = []
-
-        for box_idx, box in enumerate(results.boxes):
-            cls_id = int(box.cls[0].item())
-            if cls_id < 0 or cls_id >= len(settings.WARD_ITEM_CLASS_NAMES):
-                continue
-            conf = float(box.conf[0].item())
-            class_name = settings.WARD_ITEM_CLASS_NAMES[cls_id]
-
-            obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, mask_contour = \
-                object_detection_service.locate_box_in_base(
-                    box, color_image, depth_image,
-                    T_cam_wrist, R_gripper2base, t_gripper2base_vec,
-                    masks, box_idx,
-                )
-
-            detected_items.append(
-                SegWardItem(
-                    class_name=class_name,
-                    bbox=bbox,
-                    confidence=round(conf, 4),
-                    mask_contour=mask_contour,
-                    object_pose_in_base=obj_coords.tolist() if obj_coords is not None else None,
-                    object_pixel_coords=pixel_coords,
-                    object_yaw_deg=object_yaw_deg,
-                    object_yaw_rad=object_yaw_rad,
-                    depth_in_meters=depth_in_meters,
-                )
-            )
-
-            color = palette_color(box_idx)
-            label = f"{class_name} {conf:.2f}"
-            if mask_contour:
-                draw_seg_mask_annotation(detection_image, mask_contour, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES)
-            draw_detection_annotation(detection_image, bbox, pixel_coords, label, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES)
-            draw_yaw_annotation(
-                detection_image, bbox, pixel_coords, object_yaw_deg, object_yaw_rad, show_label=True, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES,
-            )
-
-        b64_image = None
-        success, encoded_img = cv2.imencode('.png', detection_image)
-        if success:
-            b64_image = base64.b64encode(encoded_img).decode('utf-8')
-
-        msg = f"Detected {len(detected_items)} ward item(s)." if detected_items else "No ward items detected in the current view."
-        return SegAllWardItemsResponse(message=msg, detected_items=detected_items, detection_image_base64=b64_image)
-
-    except RealSenseError as e:
-        logger.error(f"Camera error in /segment-all-ward-items: {e}", exc_info=True)
-        raise HTTPException(status_code=503, detail=f"Camera error: {str(e)}")
-    except ObjectDetectionError as e:
-        logger.error(f"Failed in /segment-all-ward-items: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Unexpected error in /segment-all-ward-items: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
-
-
-@router.post(
-    "/segment-all-ward-items-visual",
-    summary="Detect all ward items (seg) and return annotated image with masks",
-    response_class=Response,
-    responses={
-        200: {
-            "content": {"image/png": {}},
-            "description": "Returns the camera image with all detected ward items and segmentation masks drawn on it.",
-        }
-    },
-)
-def segment_all_ward_items_visual():
-    """
-    - Delegates to `segment_all_ward_items()` for full detection logic.
-    - Returns the annotated detection image (with mask overlays) as a PNG.
-    """
-    result = segment_all_ward_items()
-    if not result.detection_image_base64:
-        raise HTTPException(status_code=500, detail="Detection produced no image.")
-    image_bytes = base64.b64decode(result.detection_image_base64)
-    return Response(content=image_bytes, media_type="image/png")
 
 
 @router.post("/grasp-bottle", response_model=GraspResponse, summary="Detect a bottle and execute a grasp motion")
