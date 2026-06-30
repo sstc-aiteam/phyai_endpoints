@@ -18,17 +18,30 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # --- Pydantic Models ---
-class LocateResponse(BaseModel):
-    message: str
-    gripper_translation_vector: list[float] | None = None
-    arm_joint_info: list[float] | None = None
-    object_pose_in_base: list[float] | None
-    object_pixel_coords: list[int] | None
+class DetectItem(BaseModel):
     bbox: list[int] | None = None
+    object_pose_in_base: list[float] | None = None
+    object_pixel_coords: list[int] | None = None
     object_yaw_deg: float | None = None
     object_yaw_rad: float | None = None
     depth_in_meters: float | None = None
+
+class DetectResponse(DetectItem):
+    message: str
+    gripper_translation_vector: list[float] | None = None
+    arm_joint_info: list[float] | None = None
     detection_image_base64: str | None = None
+
+class SegResponse(DetectResponse):
+    mask_contour: list[list[int]] | None = None
+
+class WardItem(DetectItem):
+    class_name: str
+    bbox: list[int]
+    confidence: float
+
+class SegWardItem(WardItem):
+    mask_contour: list[list[int]] | None = None
 
 class GraspResponse(BaseModel):
     message: str
@@ -47,26 +60,10 @@ class CenterOnObjectResponse(BaseModel):
     message: str
     object_pose_in_base: list[float] | None = None
 
-class DetectedWardItem(BaseModel):
-    class_name: str
-    bbox: list[int]
-    confidence: float
-    object_pose_in_base: list[float] | None = None
-    object_pixel_coords: list[int] | None = None
-    object_yaw_deg: float | None = None
-    object_yaw_rad: float | None = None
-    depth_in_meters: float | None = None
-
 class DetectAllWardItemsResponse(BaseModel):
     message: str
-    detected_items: list[DetectedWardItem]
+    detected_items: list[WardItem]
     detection_image_base64: str | None = None
-
-class SegResponse(LocateResponse):
-    mask_contour: list[list[int]] | None = None
-
-class SegWardItem(DetectedWardItem):
-    mask_contour: list[list[int]] | None = None
 
 class SegAllWardItemsResponse(BaseModel):
     message: str
@@ -76,7 +73,7 @@ class SegAllWardItemsResponse(BaseModel):
 
 
 # --- API Endpoints ---
-@router.post("/locate-bottle", response_model=LocateResponse, summary="Locate a bottle and return its pose")
+@router.post("/locate-bottle", response_model=DetectResponse, summary="Locate a bottle and return its pose")
 def locate_bottle():
     """
     - Captures an image from the RealSense camera.
@@ -343,7 +340,7 @@ def center_on_object(req: CenterOnObjectRequest):
 
 
 
-@router.post("/detect-ward-item", response_model=LocateResponse, summary="Locate a specific ward item using best.pt and return its pose")
+@router.post("/detect-ward-item", response_model=DetectResponse, summary="Locate a specific ward item using best.pt and return its pose")
 def detect_ward_item(req: LocateWardItemRequest):
     """
     - Accepts an `object_name` from: `['ac_remotecontrol', 'bottle_alcohol_spray', 'cotton_swab', 'cotton_swabs_pp', 'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb']`
@@ -410,7 +407,7 @@ def detect_all_ward_items():
         T_cam_wrist, R_gripper2base, t_gripper2base_vec, _ = object_detection_service.get_detection_transform_context()
 
         detection_image = color_image.copy()
-        detected_items: list[DetectedWardItem] = []
+        detected_items: list[WardItem] = []
 
         for box in results.boxes:
             cls_id = int(box.cls[0].item())
@@ -428,7 +425,7 @@ def detect_all_ward_items():
             )
 
             detected_items.append(
-                DetectedWardItem(
+                WardItem(
                     class_name=class_name,
                     bbox=bbox,
                     confidence=round(conf, 4),
