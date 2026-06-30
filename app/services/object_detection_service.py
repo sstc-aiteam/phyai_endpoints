@@ -8,7 +8,7 @@ import math
 from app.core.config import settings
 from app.services.realsense import realsense_service, RealSenseError
 from app.services.hand_eye_calibration import hand_eye_calibration_service, HandEyeCalibrationError
-from app.services.yolo_service import bottle_yolo_service, ward_item_yolo_service
+from app.services.yolo_service import bottle_yolo_service, ward_item_seg_yolo_service
 from app.services.gripper.robotiq_gripper_control import RobotiqGripper
 
 from scipy.spatial.transform import Rotation as R
