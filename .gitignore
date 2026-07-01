@@ -8,3 +8,6 @@ nohup.out
 
 # Ignore captured images
 captured_images/ 
+
+# Ignore test files
+test/

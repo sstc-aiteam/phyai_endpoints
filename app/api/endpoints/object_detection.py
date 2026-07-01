@@ -9,8 +9,9 @@ from datetime import datetime
 
 from app.core.config import settings
 from app.services.object_detection_service import object_detection_service, ObjectDetectionError
+from app.util.annotation import draw_detection_annotation, draw_yaw_annotation, draw_seg_mask_annotation, palette_color
 from app.services.pointcloud import encode_binary_ply
-from app.services.yolo_service import ward_item_yolo_service
+from app.services.yolo_service import ward_item_yolo_service, ward_item_seg_yolo_service, bottle_yolo_service
 from app.services.realsense import realsense_service, RealSenseError
 
 
@@ -18,29 +19,37 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # --- Pydantic Models ---
-class LocateResponse(BaseModel):
-    message: str
-    gripper_translation_vector: list[float] | None = None
-    arm_joint_info: list[float] | None = None
-    object_pose_in_base: list[float] | None
-    object_pixel_coords: list[int] | None
+class DetectItem(BaseModel):
     bbox: list[int] | None = None
+    object_pose_in_base: list[float] | None = None
+    object_pixel_coords: list[int] | None = None
     object_yaw_deg: float | None = None
     object_yaw_rad: float | None = None
     depth_in_meters: float | None = None
+
+class DetectResponse(DetectItem):
+    message: str
+    gripper_translation_vector: list[float] | None = None
+    arm_joint_info: list[float] | None = None
     detection_image_base64: str | None = None
+
+class SegResponse(DetectResponse):
+    mask_contour: list[list[int]] | None = None
+
+class WardItem(DetectItem):
+    class_name: str
+    bbox: list[int]
+    confidence: float
+
+class SegWardItem(WardItem):
+    mask_contour: list[list[int]] | None = None
 
 class GraspResponse(BaseModel):
     message: str
     executed_grasp_pose: list[float] | None
 
-BEST_CLASS_NAMES = [
-    'ac_remotecontrol', 'bottle_alcohol_spray', 'cotton_swab', 'cotton_swabs_pp',
-    'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb',
-]
-
 class LocateWardItemRequest(BaseModel):
-    object_name: str = Field(..., description=f"Name of ward item to detect. Valid values: {BEST_CLASS_NAMES}")
+    object_name: str = Field(..., description=f"Name of ward item to detect. Valid values: {settings.WARD_ITEM_CLASS_NAMES}")
 
 class CenterOnObjectRequest(BaseModel):
     object_class_id: int = Field(settings.BOTTLE_CLASS_ID, description="The class ID of the object to detect.")
@@ -52,25 +61,20 @@ class CenterOnObjectResponse(BaseModel):
     message: str
     object_pose_in_base: list[float] | None = None
 
-class DetectedWardItem(BaseModel):
-    class_name: str
-    bbox: list[int]
-    confidence: float
-    object_pose_in_base: list[float] | None = None
-    object_pixel_coords: list[int] | None = None
-    object_yaw_deg: float | None = None
-    object_yaw_rad: float | None = None
-    depth_in_meters: float | None = None
-
 class DetectAllWardItemsResponse(BaseModel):
     message: str
-    detected_items: list[DetectedWardItem]
+    detected_items: list[WardItem]
+    detection_image_base64: str | None = None
+
+class SegAllWardItemsResponse(BaseModel):
+    message: str
+    detected_items: list[SegWardItem]
     detection_image_base64: str | None = None
 
 
 
 # --- API Endpoints ---
-@router.post("/locate-bottle", response_model=LocateResponse, summary="Locate a bottle and return its pose")
+@router.post("/locate-bottle", response_model=DetectResponse, summary="Locate a bottle and return its pose")
 def locate_bottle():
     """
     - Captures an image from the RealSense camera.
@@ -79,7 +83,9 @@ def locate_bottle():
     """
     try:
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
-        gripper_vec, arm_joint_info, bottle_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image = object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        bottle_model = bottle_yolo_service.get_model()
+        gripper_vec, arm_joint_info, bottle_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image, _ = \
+            object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle", model=bottle_model)
 
         b64_image = None
         if detected_image is not None:
@@ -168,13 +174,15 @@ def locate_bottle_pointcloud(
     """
     try:
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
+        bottle_model = bottle_yolo_service.get_model()
         color_frame, depth_frame = realsense_service.capture_aligned_frames()
         color_image = np.asanyarray(color_frame.get_data())
         depth_image = np.asanyarray(depth_frame.get_data())
 
-        _, _, bottle_coords, _, bbox, _, _, depth_in_meters, _ = object_detection_service.locate_object_in_base(
+        _, _, bottle_coords, _, bbox, _, _, depth_in_meters, _, _ = object_detection_service.locate_object_in_base(
             BOTTLE_CLASS_ID,
             "bottle",
+            bottle_model,
             color_image=color_image,
             depth_image=depth_image,
         )
@@ -236,13 +244,15 @@ def locate_bottle_pointcloud_visual(
     """
     try:
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
+        bottle_model = bottle_yolo_service.get_model()
         color_frame, depth_frame = realsense_service.capture_aligned_frames()
         color_image = np.asanyarray(color_frame.get_data())
         depth_image = np.asanyarray(depth_frame.get_data())
 
-        _, _, bottle_coords, _, bbox, _, _, depth_in_meters, _ = object_detection_service.locate_object_in_base(
+        _, _, bottle_coords, _, bbox, _, _, depth_in_meters, _, _ = object_detection_service.locate_object_in_base(
             BOTTLE_CLASS_ID,
             "bottle",
+            bottle_model,
             color_image=color_image,
             depth_image=depth_image,
         )
@@ -331,25 +341,25 @@ def center_on_object(req: CenterOnObjectRequest):
 
 
 
-@router.post("/locate-ward-item", response_model=LocateResponse, summary="Locate a specific ward item using best.pt and return its pose")
-def locate_ward_item(req: LocateWardItemRequest):
+@router.post("/detect-ward-item", response_model=DetectResponse, summary="Locate a specific ward item using best.pt and return its pose")
+def detect_ward_item(req: LocateWardItemRequest):
     """
     - Accepts an `object_name` from: `['ac_remotecontrol', 'bottle_alcohol_spray', 'cotton_swab', 'cotton_swabs_pp', 'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb']`
     - Captures an image from the RealSense camera.
     - Uses the `ward_item.pt` YOLOv26n model to detect the requested ward item.
     - Calculates the 3D position in the robot's base frame using the stored hand-eye calibration.
     """
-    if req.object_name not in BEST_CLASS_NAMES:
+    if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
         raise HTTPException(
             status_code=422,
-            detail=f"Invalid object_name '{req.object_name}'. Valid values: {BEST_CLASS_NAMES}",
+            detail=f"Invalid object_name '{req.object_name}'. Valid values: {settings.WARD_ITEM_CLASS_NAMES}",
         )
 
-    class_id = BEST_CLASS_NAMES.index(req.object_name)
+    class_id = settings.WARD_ITEM_CLASS_NAMES.index(req.object_name)
     model = ward_item_yolo_service.get_model()
 
     try:
-        gripper_vec, arm_joint_info, obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image = \
+        gripper_vec, arm_joint_info, obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image, _ = \
             object_detection_service.locate_object_in_base(class_id, req.object_name, model=model)
 
         b64_image = None
@@ -377,7 +387,7 @@ def locate_ward_item(req: LocateWardItemRequest):
         logger.error(f"Failed to locate ward item: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected error in /locate-ward-item: {e}", exc_info=True)
+        logger.error(f"Unexpected error in /detect-ward-item: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
@@ -398,15 +408,15 @@ def detect_all_ward_items():
         T_cam_wrist, R_gripper2base, t_gripper2base_vec, _ = object_detection_service.get_detection_transform_context()
 
         detection_image = color_image.copy()
-        detected_items: list[DetectedWardItem] = []
+        detected_items: list[WardItem] = []
 
-        for box in results.boxes:
+        for box_idx, box in enumerate(results.boxes):
             cls_id = int(box.cls[0].item())
-            if cls_id < 0 or cls_id >= len(BEST_CLASS_NAMES):
+            if cls_id < 0 or cls_id >= len(settings.WARD_ITEM_CLASS_NAMES):
                 continue
             conf = float(box.conf[0].item())
-            class_name = BEST_CLASS_NAMES[cls_id]
-            obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters = object_detection_service.locate_box_in_base(
+            class_name = settings.WARD_ITEM_CLASS_NAMES[cls_id]
+            obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, _ = object_detection_service.locate_box_in_base(
                 box,
                 color_image,
                 depth_image,
@@ -416,7 +426,7 @@ def detect_all_ward_items():
             )
 
             detected_items.append(
-                DetectedWardItem(
+                WardItem(
                     class_name=class_name,
                     bbox=bbox,
                     confidence=round(conf, 4),
@@ -428,15 +438,19 @@ def detect_all_ward_items():
                 )
             )
 
+            color = palette_color(box_idx)
             label = f"{class_name} {conf:.2f}"
-            object_detection_service.draw_detection_annotation(detection_image, bbox, pixel_coords, label)
-            object_detection_service.draw_yaw_annotation(
+            draw_detection_annotation(detection_image, bbox, pixel_coords, label, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES)
+            draw_yaw_annotation(
                 detection_image,
                 bbox,
                 pixel_coords,
                 object_yaw_deg,
                 object_yaw_rad,
                 show_label=True,
+                color=color,
+                class_name=class_name,
+                skip_classes=settings.ANNOTATION_SKIP_CLASSES,
             )
 
         b64_image = None
@@ -479,6 +493,349 @@ def detect_all_ward_items_visual():
         raise HTTPException(status_code=500, detail="Detection produced no image.")
     image_bytes = base64.b64decode(result.detection_image_base64)
     return Response(content=image_bytes, media_type="image/png")
+
+
+@router.post("/segment-ward-item", response_model=SegResponse, summary="Locate a specific ward item using ward_item_seg.pt and return its pose with mask")
+def segment_ward_item(req: LocateWardItemRequest):
+    """
+    - Accepts an `object_name` from the same set as `/detect-ward-item`.
+    - Captures an image from the RealSense camera.
+    - Uses the `ward_item_seg.pt` segmentation model to detect the requested ward item.
+    - Pixel coordinates are derived from the mask centroid for higher accuracy.
+    - Returns the 3D pose in the robot's base frame plus the mask contour polygon.
+    """
+    if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid object_name '{req.object_name}'. Valid values: {settings.WARD_ITEM_CLASS_NAMES}",
+        )
+
+    class_id = settings.WARD_ITEM_CLASS_NAMES.index(req.object_name)
+    model = ward_item_seg_yolo_service.get_model()
+
+    try:
+        gripper_vec, arm_joint_info, obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image, mask_contour = \
+            object_detection_service.locate_object_in_base(class_id, req.object_name, model=model)
+
+        b64_image = None
+        if detected_image is not None:
+            success, encoded_img = cv2.imencode('.png', detected_image)
+            if success:
+                b64_image = base64.b64encode(encoded_img).decode('utf-8')
+
+        gripper_vec_list = gripper_vec.tolist() if gripper_vec is not None else None
+        detected = obj_coords is not None
+        return SegResponse(
+            message=f"'{req.object_name}' located successfully." if detected else f"'{req.object_name}' not detected in the current view.",
+            gripper_translation_vector=gripper_vec_list,
+            arm_joint_info=arm_joint_info,
+            object_pose_in_base=obj_coords.tolist() if detected else None,
+            object_pixel_coords=pixel_coords,
+            bbox=bbox,
+            object_yaw_deg=object_yaw_deg,
+            object_yaw_rad=object_yaw_rad,
+            depth_in_meters=depth_in_meters,
+            detection_image_base64=b64_image,
+            mask_contour=mask_contour,
+        )
+    except ObjectDetectionError as e:
+        logger.error(f"Failed to locate ward item (seg): {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /segment-ward-item: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+@router.post("/segment-all-ward-items", response_model=SegAllWardItemsResponse, summary="Detect all ward items using ward_item_seg.pt with segmentation masks")
+def segment_all_ward_items():
+    """
+    - Captures an image from the RealSense camera.
+    - Uses the `ward_item_seg.pt` segmentation model to detect all ward item classes.
+    - Returns bounding boxes, mask contour polygons, poses, and an annotated image (base64 PNG).
+    """
+    try:
+        if not realsense_service.is_initialized:
+            realsense_service._initialize()
+
+        color_image, depth_image = realsense_service.capture_images()
+        model = ward_item_seg_yolo_service.get_model()
+        results = model(color_image, verbose=False)[0]
+        masks = results.masks
+        T_cam_wrist, R_gripper2base, t_gripper2base_vec, _ = object_detection_service.get_detection_transform_context()
+
+        detection_image = color_image.copy()
+        detected_items: list[SegWardItem] = []
+
+        for box_idx, box in enumerate(results.boxes):
+            cls_id = int(box.cls[0].item())
+            if cls_id < 0 or cls_id >= len(settings.WARD_ITEM_CLASS_NAMES):
+                continue
+            conf = float(box.conf[0].item())
+            class_name = settings.WARD_ITEM_CLASS_NAMES[cls_id]
+
+            obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, mask_contour = \
+                object_detection_service.locate_box_in_base(
+                    box, color_image, depth_image,
+                    T_cam_wrist, R_gripper2base, t_gripper2base_vec,
+                    masks, box_idx,
+                )
+
+            detected_items.append(
+                SegWardItem(
+                    class_name=class_name,
+                    bbox=bbox,
+                    confidence=round(conf, 4),
+                    mask_contour=mask_contour,
+                    object_pose_in_base=obj_coords.tolist() if obj_coords is not None else None,
+                    object_pixel_coords=pixel_coords,
+                    object_yaw_deg=object_yaw_deg,
+                    object_yaw_rad=object_yaw_rad,
+                    depth_in_meters=depth_in_meters,
+                )
+            )
+
+            color = palette_color(box_idx)
+            label = f"{class_name} {conf:.2f}"
+            if mask_contour:
+                draw_seg_mask_annotation(detection_image, mask_contour, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES)
+            draw_detection_annotation(detection_image, bbox, pixel_coords, label, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES)
+            draw_yaw_annotation(
+                detection_image, bbox, pixel_coords, object_yaw_deg, object_yaw_rad, show_label=True, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES,
+            )
+
+        b64_image = None
+        success, encoded_img = cv2.imencode('.png', detection_image)
+        if success:
+            b64_image = base64.b64encode(encoded_img).decode('utf-8')
+
+        msg = f"Detected {len(detected_items)} ward item(s)." if detected_items else "No ward items detected in the current view."
+        return SegAllWardItemsResponse(message=msg, detected_items=detected_items, detection_image_base64=b64_image)
+
+    except RealSenseError as e:
+        logger.error(f"Camera error in /segment-all-ward-items: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Camera error: {str(e)}")
+    except ObjectDetectionError as e:
+        logger.error(f"Failed in /segment-all-ward-items: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /segment-all-ward-items: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+@router.post(
+    "/segment-all-ward-items-visual",
+    summary="Detect all ward items (seg) and return annotated image with masks",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Returns the camera image with all detected ward items and segmentation masks drawn on it.",
+        }
+    },
+)
+def segment_all_ward_items_visual():
+    """
+    - Delegates to `segment_all_ward_items()` for full detection logic.
+    - Returns the annotated detection image (with mask overlays) as a PNG.
+    """
+    result = segment_all_ward_items()
+    if not result.detection_image_base64:
+        raise HTTPException(status_code=500, detail="Detection produced no image.")
+    image_bytes = base64.b64decode(result.detection_image_base64)
+    return Response(content=image_bytes, media_type="image/png")
+
+@router.post(
+    "/segment-ward-item-pointcloud",
+    summary="Segment a ward item and return its mask point cloud",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/octet-stream": {}},
+            "description": "Returns the detected item segmentation mask as a colored binary little-endian PLY point cloud.",
+        }
+    },
+)
+def segment_ward_item_pointcloud(
+    req: LocateWardItemRequest,
+    depth_margin_m: float | None = Query(
+        0.08,
+        description="Keep only points within +/- this many meters from the detected center depth. Set to 0 to keep the full mask.",
+    ),
+):
+    """
+    Segments the ward item using the seg model, then returns the same frame's RealSense
+    point cloud cropped to the item's mask contour and filtered by its depth.
+    """
+    if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid object_name '{req.object_name}'. Valid values: {settings.WARD_ITEM_CLASS_NAMES}",
+        )
+
+    class_id = settings.WARD_ITEM_CLASS_NAMES.index(req.object_name)
+    model = ward_item_seg_yolo_service.get_model()
+
+    try:
+        color_frame, depth_frame = realsense_service.capture_aligned_frames()
+        color_image = np.asanyarray(color_frame.get_data())
+        depth_image = np.asanyarray(depth_frame.get_data())
+
+        _, _, obj_coords, _, bbox, _, _, depth_in_meters, _, mask_contour = \
+            object_detection_service.locate_object_in_base(
+                class_id,
+                req.object_name,
+                model,
+                color_image=color_image,
+                depth_image=depth_image,
+            )
+
+        if obj_coords is None or bbox is None:
+            raise HTTPException(status_code=404, detail=f"'{req.object_name}' not detected in the current view.")
+
+        vertices, colors = realsense_service.point_cloud_from_frames(
+            color_frame,
+            depth_frame,
+            bbox=bbox,
+            depth_center_m=depth_in_meters,
+            depth_margin_m=None if depth_margin_m == 0 else depth_margin_m,
+            mask_contour=mask_contour if mask_contour else None,
+        )
+        if len(vertices) == 0:
+            raise HTTPException(status_code=500, detail=f"Detected mask/bbox has no valid depth points: {bbox}")
+
+        ply_bytes = encode_binary_ply(vertices, colors)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"{req.object_name}_pointcloud_{timestamp}.ply"
+
+        return Response(
+            content=ply_bytes,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-PointCloud-BBox": ",".join(map(str, bbox)),
+                "X-PointCloud-Depth-Meters": f"{depth_in_meters:.6f}",
+                "X-PointCloud-Depth-Margin-Meters": "" if depth_margin_m is None else f"{depth_margin_m:.6f}",
+                "X-PointCloud-Mask-Used": "true" if mask_contour else "false",
+            },
+        )
+    except HTTPException:
+        raise
+    except ObjectDetectionError as e:
+        logger.error(f"Failed to segment item point cloud: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /segment-ward-item-pointcloud: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+@router.post(
+    "/segment-ward-item-pointcloud-visual",
+    summary="Preview the seg mask and depth filter used for segment-ward-item-pointcloud",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Returns a PNG preview of the segmentation mask and depth-filtered pixels used for point cloud generation.",
+        }
+    },
+)
+def segment_ward_item_pointcloud_visual(
+    req: LocateWardItemRequest,
+    depth_margin_m: float = Query(
+        0.08,
+        description="Show points within +/- this many meters from the detected center depth.",
+    ),
+):
+    """
+    Shows the seg mask polygon and depth-filtered pixels that would become the item point cloud.
+    """
+    if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid object_name '{req.object_name}'. Valid values: {settings.WARD_ITEM_CLASS_NAMES}",
+        )
+
+    class_id = settings.WARD_ITEM_CLASS_NAMES.index(req.object_name)
+    model = ward_item_seg_yolo_service.get_model()
+
+    try:
+        color_frame, depth_frame = realsense_service.capture_aligned_frames()
+        color_image = np.asanyarray(color_frame.get_data())
+        depth_image = np.asanyarray(depth_frame.get_data())
+
+        _, _, obj_coords, pixel_coords, bbox, _, _, depth_in_meters, _, mask_contour = \
+            object_detection_service.locate_object_in_base(
+                class_id,
+                req.object_name,
+                model,
+                color_image=color_image,
+                depth_image=depth_image,
+            )
+
+        if obj_coords is None or bbox is None:
+            raise HTTPException(status_code=404, detail=f"'{req.object_name}' not detected in the current view.")
+
+        height, width = depth_image.shape[:2]
+        depth_m = depth_image.astype(np.float32) * realsense_service.depth_scale
+
+        if mask_contour:
+            poly = np.array(mask_contour, dtype=np.int32)
+            fill = np.zeros((height, width), dtype=np.uint8)
+            cv2.fillPoly(fill, [poly], 1)
+            spatial_mask = fill.astype(bool)
+        else:
+            x1, y1, x2, y2 = map(int, bbox)
+            x1 = max(0, min(x1, width - 1))
+            x2 = max(0, min(x2, width))
+            y1 = max(0, min(y1, height - 1))
+            y2 = max(0, min(y2, height))
+            spatial_mask = np.zeros((height, width), dtype=bool)
+            spatial_mask[y1:y2, x1:x2] = True
+
+        depth_filter = (
+            (depth_m > 0)
+            & (depth_m >= max(0.0, depth_in_meters - depth_margin_m))
+            & (depth_m <= depth_in_meters + depth_margin_m)
+        )
+        active_mask = spatial_mask & depth_filter
+
+        preview = color_image.copy()
+        overlay = preview.copy()
+        overlay[active_mask] = (0, 255, 0)
+        cv2.addWeighted(overlay, 0.45, preview, 0.55, 0, preview)
+
+        if mask_contour:
+            cv2.polylines(preview, [np.array(mask_contour, dtype=np.int32)], isClosed=True, color=(0, 255, 0), thickness=2)
+            label_x, label_y = int(mask_contour[0][0]), int(mask_contour[0][1])
+        else:
+            x1, y1, x2, y2 = map(int, bbox)
+            cv2.rectangle(preview, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            label_x, label_y = x1, y1
+
+        cv2.putText(
+            preview,
+            f"{req.object_name} depth {depth_in_meters:.3f}m +/- {depth_margin_m:.3f}m",
+            (label_x, max(20, label_y - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+
+        success, encoded_img = cv2.imencode(".png", preview)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to encode mask preview to PNG")
+
+        return Response(content=encoded_img.tobytes(), media_type="image/png")
+    except HTTPException:
+        raise
+    except ObjectDetectionError as e:
+        logger.error(f"Failed to render segment item point cloud visual: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /segment-ward-item-pointcloud-visual: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
 @router.post("/grasp-bottle", response_model=GraspResponse, summary="Detect a bottle and execute a grasp motion")

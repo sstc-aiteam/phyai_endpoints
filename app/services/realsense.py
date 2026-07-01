@@ -167,15 +167,19 @@ class RealSenseService:
         bbox: list[int] | None = None,
         depth_center_m: float | None = None,
         depth_margin_m: float | None = None,
+        mask_contour: list[list[int]] | None = None,
     ):
         """
         Converts aligned RealSense color/depth frames to a colored point cloud.
 
         Args:
-            bbox (list[int] | None): Optional [x1, y1, x2, y2] pixel crop in the aligned
-                color/depth image. x2 and y2 are treated as exclusive bounds.
+            bbox (list[int] | None): Optional [x1, y1, x2, y2] pixel crop. Ignored when
+                mask_contour is provided.
             depth_center_m (float | None): Optional object center depth in meters.
             depth_margin_m (float | None): Optional +/- meter range around depth_center_m.
+            mask_contour (list[list[int]] | None): Optional polygon [[x,y],...] from a
+                segmentation mask. When provided, takes precedence over bbox for spatial
+                filtering.
 
         Returns:
             A tuple containing (vertices, colors), where vertices are Nx3 float32 meters in
@@ -189,8 +193,14 @@ class RealSenseService:
         colors = color_image.reshape(-1, 3)[:, ::-1]
 
         valid = np.isfinite(vertices).all(axis=1) & (vertices[:, 2] > 0)
-        if bbox is not None:
-            height, width = color_image.shape[:2]
+        height, width = color_image.shape[:2]
+
+        if mask_contour is not None:
+            poly = np.array(mask_contour, dtype=np.int32)
+            spatial_mask = np.zeros((height, width), dtype=np.uint8)
+            cv2.fillPoly(spatial_mask, [poly], 1)
+            valid &= spatial_mask.reshape(-1).astype(bool)
+        elif bbox is not None:
             x1, y1, x2, y2 = map(int, bbox)
             x1 = max(0, min(x1, width - 1))
             x2 = max(0, min(x2, width))
