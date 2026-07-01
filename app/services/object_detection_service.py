@@ -285,6 +285,8 @@ class ObjectDetectionService:
                     show_label=True,
                     label_position="above",
                     color=color,
+                    class_name=object_name,
+                    skip_classes=settings.ANNOTATION_SKIP_CLASSES
                 )
 
                 logger.info(f"Found {object_name} at pixel ({u}, {v}) with depth {depth_in_meters:.3f}m.")
@@ -602,7 +604,8 @@ class ObjectDetectionService:
             raise ObjectDetectionError(f"Calibration file '{settings.CALIBRATION_FILE}' not found. Please run a hand-eye calibration first.")
 
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
-        _, _, bottle_xyz, _, _, _, _, _, _, _ = self.locate_object_in_base(BOTTLE_CLASS_ID, "bottle")
+        bottle_model = bottle_yolo_service.get_model()
+        _, _, bottle_xyz, _, _, _, _, _, _, _ = self.locate_object_in_base(BOTTLE_CLASS_ID, "bottle", model=bottle_model)
 
         if bottle_xyz is not None:
             logger.info(f"Attempting to grasp bottle at base coordinates: {bottle_xyz.tolist()}")
