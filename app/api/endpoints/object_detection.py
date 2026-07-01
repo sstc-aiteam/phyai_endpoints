@@ -780,7 +780,6 @@ def segment_ward_item_pointcloud_visual(
 
         if mask_contour:
             poly = np.array(mask_contour, dtype=np.int32)
-            spatial_mask = np.zeros((height, width), dtype=bool)
             fill = np.zeros((height, width), dtype=np.uint8)
             cv2.fillPoly(fill, [poly], 1)
             spatial_mask = fill.astype(bool)
