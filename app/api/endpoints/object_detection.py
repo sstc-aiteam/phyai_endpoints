@@ -10,7 +10,7 @@ from datetime import datetime
 from app.core.config import settings
 from app.services.object_detection_service import object_detection_service, ObjectDetectionError
 from app.util.annotation import draw_detection_annotation, draw_yaw_annotation, draw_seg_mask_annotation, palette_color
-from app.services.pointcloud import encode_binary_ply
+from app.util.pointcloud import encode_binary_ply, transform_camera_points_to_base
 from app.services.yolo_service import ward_item_yolo_service, ward_item_seg_yolo_service, bottle_yolo_service
 from app.services.realsense import realsense_service, RealSenseError
 
@@ -71,6 +71,55 @@ class SegAllWardItemsResponse(BaseModel):
     detected_items: list[SegWardItem]
     detection_image_base64: str | None = None
 
+
+POINTCLOUD_OUTPUT_FRAME = "base_link"
+POINTCLOUD_SOURCE_FRAME = "camera"
+
+
+def _pointcloud_depth_margin(depth_margin_m: float | None) -> float | None:
+    return None if depth_margin_m == 0 else depth_margin_m
+
+
+def _to_base_link_pointcloud(vertices: np.ndarray, transform_context) -> np.ndarray:
+    T_cam_wrist, R_gripper2base, t_gripper2base_vec, _ = transform_context
+    vertices_base = transform_camera_points_to_base(
+        vertices,
+        T_cam_wrist,
+        R_gripper2base,
+        t_gripper2base_vec,
+    )
+    return vertices_base.astype(np.float32, copy=False)
+
+
+def _pointcloud_ply_response(
+    vertices: np.ndarray,
+    colors: np.ndarray,
+    filename_prefix: str,
+    bbox: list[int],
+    depth_in_meters: float,
+    depth_margin_m: float | None,
+    extra_headers: dict[str, str] | None = None,
+) -> Response:
+    ply_bytes = encode_binary_ply(vertices, colors)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    filename = f"{filename_prefix}_pointcloud_{POINTCLOUD_OUTPUT_FRAME}_{timestamp}.ply"
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-PointCloud-BBox": ",".join(map(str, bbox)),
+        "X-PointCloud-Depth-Meters": f"{depth_in_meters:.6f}",
+        "X-PointCloud-Depth-Margin-Meters": "" if depth_margin_m is None else f"{depth_margin_m:.6f}",
+        "X-PointCloud-Frame": POINTCLOUD_OUTPUT_FRAME,
+        "X-PointCloud-Source-Frame": POINTCLOUD_SOURCE_FRAME,
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+
+    return Response(
+        content=ply_bytes,
+        media_type="application/octet-stream",
+        headers=headers,
+    )
 
 
 # --- API Endpoints ---
@@ -153,12 +202,12 @@ def locate_bottle_visual():
 
 @router.post(
     "/locate-bottle-pointcloud",
-    summary="Locate a bottle and return its bbox point cloud",
+    summary="Locate a bottle and return its bbox point cloud in base_link",
     response_class=Response,
     responses={
         200: {
             "content": {"application/octet-stream": {}},
-            "description": "Returns the detected bottle bbox as a colored binary little-endian PLY point cloud.",
+            "description": "Returns the detected bottle bbox as a colored binary little-endian PLY point cloud in base_link coordinates.",
         }
     },
 )
@@ -170,7 +219,7 @@ def locate_bottle_pointcloud(
 ):
     """
     Detects the bottle bbox, then returns the same frame's RealSense point cloud cropped to that
-    bbox and filtered by the bottle depth.
+    bbox, filtered by the bottle depth, and transformed into the robot base frame.
     """
     try:
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
@@ -178,6 +227,7 @@ def locate_bottle_pointcloud(
         color_frame, depth_frame = realsense_service.capture_aligned_frames()
         color_image = np.asanyarray(color_frame.get_data())
         depth_image = np.asanyarray(depth_frame.get_data())
+        transform_context = object_detection_service.get_detection_transform_context()
 
         _, _, bottle_coords, _, bbox, _, _, depth_in_meters, _, _ = object_detection_service.locate_object_in_base(
             BOTTLE_CLASS_ID,
@@ -194,24 +244,19 @@ def locate_bottle_pointcloud(
             depth_frame,
             bbox=bbox,
             depth_center_m=depth_in_meters,
-            depth_margin_m=None if depth_margin_m == 0 else depth_margin_m,
+            depth_margin_m=_pointcloud_depth_margin(depth_margin_m),
         )
         if len(vertices) == 0:
             raise HTTPException(status_code=500, detail=f"Detected bbox has no valid depth points: {bbox}")
 
-        ply_bytes = encode_binary_ply(vertices, colors)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"bottle_pointcloud_{timestamp}.ply"
-
-        return Response(
-            content=ply_bytes,
-            media_type="application/octet-stream",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "X-PointCloud-BBox": ",".join(map(str, bbox)),
-                "X-PointCloud-Depth-Meters": f"{depth_in_meters:.6f}",
-                "X-PointCloud-Depth-Margin-Meters": "" if depth_margin_m is None else f"{depth_margin_m:.6f}",
-            },
+        vertices = _to_base_link_pointcloud(vertices, transform_context)
+        return _pointcloud_ply_response(
+            vertices,
+            colors,
+            filename_prefix="bottle",
+            bbox=bbox,
+            depth_in_meters=depth_in_meters,
+            depth_margin_m=depth_margin_m,
         )
     except HTTPException:
         raise
@@ -224,12 +269,12 @@ def locate_bottle_pointcloud(
 
 @router.post(
     "/locate-bottle-pointcloud-visual",
-    summary="Preview the dynamic bottle bbox/depth mask used for point cloud",
+    summary="Preview the bottle pixels used for the base_link point cloud",
     response_class=Response,
     responses={
         200: {
             "content": {"image/png": {}},
-            "description": "Returns a PNG preview of the detected bbox and depth mask used for point cloud generation.",
+            "description": "Returns a PNG preview of the detected bbox and depth mask before the PLY point cloud is transformed to base_link.",
         }
     },
 )
@@ -240,7 +285,8 @@ def locate_bottle_pointcloud_visual(
     ),
 ):
     """
-    Shows the dynamic detection bbox and depth-filtered pixels that would become the bottle point cloud.
+    Shows the dynamic detection bbox and depth-filtered pixels used before the bottle
+    point cloud is transformed into the robot base frame.
     """
     try:
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
@@ -268,11 +314,14 @@ def locate_bottle_pointcloud_visual(
 
         depth_m = depth_image.astype(np.float32) * realsense_service.depth_scale
         mask = np.zeros((height, width), dtype=bool)
-        mask[y1:y2, x1:x2] = (
-            (depth_m[y1:y2, x1:x2] > 0)
-            & (depth_m[y1:y2, x1:x2] >= max(0.0, depth_in_meters - depth_margin_m))
-            & (depth_m[y1:y2, x1:x2] <= depth_in_meters + depth_margin_m)
-        )
+        if depth_margin_m == 0:
+            mask[y1:y2, x1:x2] = depth_m[y1:y2, x1:x2] > 0
+        else:
+            mask[y1:y2, x1:x2] = (
+                (depth_m[y1:y2, x1:x2] > 0)
+                & (depth_m[y1:y2, x1:x2] >= max(0.0, depth_in_meters - depth_margin_m))
+                & (depth_m[y1:y2, x1:x2] <= depth_in_meters + depth_margin_m)
+            )
 
         preview = color_image.copy()
         overlay = preview.copy()
@@ -646,12 +695,12 @@ def segment_all_ward_items_visual():
 
 @router.post(
     "/segment-ward-item-pointcloud",
-    summary="Segment a ward item and return its mask point cloud",
+    summary="Segment a ward item and return its mask point cloud in base_link",
     response_class=Response,
     responses={
         200: {
             "content": {"application/octet-stream": {}},
-            "description": "Returns the detected item segmentation mask as a colored binary little-endian PLY point cloud.",
+            "description": "Returns the detected item segmentation mask as a colored binary little-endian PLY point cloud in base_link coordinates.",
         }
     },
 )
@@ -659,12 +708,13 @@ def segment_ward_item_pointcloud(
     req: LocateWardItemRequest,
     depth_margin_m: float | None = Query(
         0.08,
-        description="Keep only points within +/- this many meters from the detected center depth. Set to 0 to keep the full mask.",
+        description="For segmented point clouds, remove only points farther than center depth + this many meters. Set to 0 to keep the full mask.",
     ),
 ):
     """
     Segments the ward item using the seg model, then returns the same frame's RealSense
-    point cloud cropped to the item's mask contour and filtered by its depth.
+    point cloud cropped to the item's mask contour, with points too far behind the object
+    removed, and transformed into the robot base frame.
     """
     if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
         raise HTTPException(
@@ -679,6 +729,7 @@ def segment_ward_item_pointcloud(
         color_frame, depth_frame = realsense_service.capture_aligned_frames()
         color_image = np.asanyarray(color_frame.get_data())
         depth_image = np.asanyarray(depth_frame.get_data())
+        transform_context = object_detection_service.get_detection_transform_context()
 
         _, _, obj_coords, _, bbox, _, _, depth_in_meters, _, mask_contour = \
             object_detection_service.locate_object_in_base(
@@ -691,32 +742,29 @@ def segment_ward_item_pointcloud(
 
         if obj_coords is None or bbox is None:
             raise HTTPException(status_code=404, detail=f"'{req.object_name}' not detected in the current view.")
+        if not mask_contour:
+            raise HTTPException(status_code=404, detail=f"'{req.object_name}' segmentation mask not detected in the current view.")
 
         vertices, colors = realsense_service.point_cloud_from_frames(
             color_frame,
             depth_frame,
-            bbox=bbox,
             depth_center_m=depth_in_meters,
-            depth_margin_m=None if depth_margin_m == 0 else depth_margin_m,
-            mask_contour=mask_contour if mask_contour else None,
+            depth_margin_m=_pointcloud_depth_margin(depth_margin_m),
+            mask_contour=mask_contour,
+            depth_filter_mode="far_only",
         )
         if len(vertices) == 0:
-            raise HTTPException(status_code=500, detail=f"Detected mask/bbox has no valid depth points: {bbox}")
+            raise HTTPException(status_code=500, detail=f"Detected mask has no valid depth points: {bbox}")
 
-        ply_bytes = encode_binary_ply(vertices, colors)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"{req.object_name}_pointcloud_{timestamp}.ply"
-
-        return Response(
-            content=ply_bytes,
-            media_type="application/octet-stream",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "X-PointCloud-BBox": ",".join(map(str, bbox)),
-                "X-PointCloud-Depth-Meters": f"{depth_in_meters:.6f}",
-                "X-PointCloud-Depth-Margin-Meters": "" if depth_margin_m is None else f"{depth_margin_m:.6f}",
-                "X-PointCloud-Mask-Used": "true" if mask_contour else "false",
-            },
+        vertices = _to_base_link_pointcloud(vertices, transform_context)
+        return _pointcloud_ply_response(
+            vertices,
+            colors,
+            filename_prefix=req.object_name,
+            bbox=bbox,
+            depth_in_meters=depth_in_meters,
+            depth_margin_m=depth_margin_m,
+            extra_headers={"X-PointCloud-Mask-Used": "true" if mask_contour else "false"},
         )
     except HTTPException:
         raise
@@ -730,12 +778,12 @@ def segment_ward_item_pointcloud(
 
 @router.post(
     "/segment-ward-item-pointcloud-visual",
-    summary="Preview the seg mask and depth filter used for segment-ward-item-pointcloud",
+    summary="Preview the item pixels used for the base_link point cloud",
     response_class=Response,
     responses={
         200: {
             "content": {"image/png": {}},
-            "description": "Returns a PNG preview of the segmentation mask and depth-filtered pixels used for point cloud generation.",
+            "description": "Returns a PNG preview of the segmentation mask and depth-filtered pixels before the PLY point cloud is transformed to base_link.",
         }
     },
 )
@@ -743,11 +791,11 @@ def segment_ward_item_pointcloud_visual(
     req: LocateWardItemRequest,
     depth_margin_m: float = Query(
         0.08,
-        description="Show points within +/- this many meters from the detected center depth.",
+        description="Show mask points after removing only points farther than center depth + this many meters.",
     ),
 ):
     """
-    Shows the seg mask polygon and depth-filtered pixels that would become the item point cloud.
+    Shows the seg mask polygon after removing only points too far behind the detected item.
     """
     if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
         raise HTTPException(
@@ -792,11 +840,13 @@ def segment_ward_item_pointcloud_visual(
             spatial_mask = np.zeros((height, width), dtype=bool)
             spatial_mask[y1:y2, x1:x2] = True
 
-        depth_filter = (
-            (depth_m > 0)
-            & (depth_m >= max(0.0, depth_in_meters - depth_margin_m))
-            & (depth_m <= depth_in_meters + depth_margin_m)
-        )
+        if depth_margin_m == 0:
+            depth_filter = depth_m > 0
+        else:
+            depth_filter = (
+                (depth_m > 0)
+                & (depth_m <= depth_in_meters + depth_margin_m)
+            )
         active_mask = spatial_mask & depth_filter
 
         preview = color_image.copy()
@@ -812,9 +862,14 @@ def segment_ward_item_pointcloud_visual(
             cv2.rectangle(preview, (x1, y1), (x2, y2), (0, 255, 0), 2)
             label_x, label_y = x1, y1
 
+        depth_label = (
+            f"{req.object_name} full mask"
+            if depth_margin_m == 0
+            else f"{req.object_name} max depth {depth_in_meters + depth_margin_m:.3f}m"
+        )
         cv2.putText(
             preview,
-            f"{req.object_name} depth {depth_in_meters:.3f}m +/- {depth_margin_m:.3f}m",
+            depth_label,
             (label_x, max(20, label_y - 10)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,

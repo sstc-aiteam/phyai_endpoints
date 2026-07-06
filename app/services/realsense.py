@@ -168,6 +168,7 @@ class RealSenseService:
         depth_center_m: float | None = None,
         depth_margin_m: float | None = None,
         mask_contour: list[list[int]] | None = None,
+        depth_filter_mode: str = "symmetric",
     ):
         """
         Converts aligned RealSense color/depth frames to a colored point cloud.
@@ -180,6 +181,9 @@ class RealSenseService:
             mask_contour (list[list[int]] | None): Optional polygon [[x,y],...] from a
                 segmentation mask. When provided, takes precedence over bbox for spatial
                 filtering.
+            depth_filter_mode (str): "symmetric" keeps points within
+                depth_center_m +/- depth_margin_m. "far_only" only removes points farther
+                than depth_center_m + depth_margin_m.
 
         Returns:
             A tuple containing (vertices, colors), where vertices are Nx3 float32 meters in
@@ -215,9 +219,12 @@ class RealSenseService:
             valid &= bbox_mask_2d.reshape(-1)
 
         if depth_center_m is not None and depth_margin_m is not None and depth_margin_m > 0:
-            depth_min = max(0.0, depth_center_m - depth_margin_m)
             depth_max = depth_center_m + depth_margin_m
-            valid &= (vertices[:, 2] >= depth_min) & (vertices[:, 2] <= depth_max)
+            if depth_filter_mode == "far_only":
+                valid &= vertices[:, 2] <= depth_max
+            else:
+                depth_min = max(0.0, depth_center_m - depth_margin_m)
+                valid &= (vertices[:, 2] >= depth_min) & (vertices[:, 2] <= depth_max)
 
         return vertices[valid], colors[valid]
 

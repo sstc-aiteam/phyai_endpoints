@@ -6,6 +6,7 @@ import os
 
 from app.services.hand_eye_calibration import hand_eye_calibration_service, HandEyeCalibrationError
 from app.services.realsense import realsense_service, RealSenseError
+from app.util.pointcloud import transform_camera_points_to_base
 from app.core.config import settings
 
 
@@ -247,20 +248,19 @@ def verify_point(req: VerifyPointRequest):
 
         # 3. Deproject pixel to a 3D point in the camera's frame
         point_in_cam_frame = realsense_service.deproject_pixel_to_point([req.u, req.v], depth_in_meters)
-        P_cam_homogeneous = np.array(point_in_cam_frame + [1.0])
 
         # 4. Get current robot pose
         R_gripper2base, t_gripper2base_vec = hand_eye_calibration_service.get_robot_pose()
         pose_vector = hand_eye_calibration_service.rtde_r.getActualTCPPose()
         current_orientation_rv = pose_vector[3:]
 
-        T_gripper2base = np.eye(4)
-        T_gripper2base[:3, :3] = R_gripper2base
-        T_gripper2base[:3, 3] = t_gripper2base_vec
-
         # 5. Calculate the target point in the robot's base frame: P_base = T_gripper2base @ T_cam2gripper @ P_cam
-        P_base_homogeneous = T_gripper2base @ T_cam2gripper @ P_cam_homogeneous
-        target_xyz = P_base_homogeneous[:3]
+        target_xyz = transform_camera_points_to_base(
+            np.asarray([point_in_cam_frame], dtype=np.float32),
+            T_cam2gripper,
+            R_gripper2base,
+            t_gripper2base_vec,
+        )[0]
 
         # Combine the calculated XYZ with the robot's current orientation for a stable move
         target_pose = target_xyz.tolist() + current_orientation_rv
