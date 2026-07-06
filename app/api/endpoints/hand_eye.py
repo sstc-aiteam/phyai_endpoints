@@ -6,7 +6,7 @@ import os
 
 from app.services.hand_eye_calibration import hand_eye_calibration_service, HandEyeCalibrationError
 from app.services.realsense import realsense_service, RealSenseError
-from app.services.pointcloud import transform_camera_points_to_base
+from app.util.pointcloud import transform_camera_points_to_base
 from app.core.config import settings
 
 

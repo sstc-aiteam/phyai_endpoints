@@ -10,7 +10,7 @@ from datetime import datetime
 from app.core.config import settings
 from app.services.object_detection_service import object_detection_service, ObjectDetectionError
 from app.util.annotation import draw_detection_annotation, draw_yaw_annotation, draw_seg_mask_annotation, palette_color
-from app.services.pointcloud import encode_binary_ply, transform_camera_points_to_base
+from app.util.pointcloud import encode_binary_ply, transform_camera_points_to_base
 from app.services.yolo_service import ward_item_yolo_service, ward_item_seg_yolo_service, bottle_yolo_service
 from app.services.realsense import realsense_service, RealSenseError
 
