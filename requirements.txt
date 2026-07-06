@@ -7,3 +7,13 @@ numpy
 pydantic-settings
 ur_rtde # Universal Robots Real-Time Data Exchange (RTDE) library for Python
 ultralytics
+
+# ward_object_pipeline (RF-DETR + SAM2 + DINOv2) dependencies
+# https://github.com/sstc-aiteam/ward_object_pipeline (branch: feature/yolo26-detector-backend)
+torch
+torchvision
+transformers
+supervision
+shapely
+pycocotools
+rfdetr

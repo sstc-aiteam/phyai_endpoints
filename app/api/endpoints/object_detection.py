@@ -13,6 +13,8 @@ from app.util.annotation import draw_detection_annotation, draw_yaw_annotation, 
 from app.services.pointcloud import encode_binary_ply, transform_camera_points_to_base
 from app.services.yolo_service import ward_item_yolo_service, ward_item_seg_yolo_service, bottle_yolo_service
 from app.services.realsense import realsense_service, RealSenseError
+from app.services.ward_object_pipeline_service import ward_object_pipeline_service
+from app.services.ward_object_pipeline.api_output_formatter import compressed_rle_to_binary_mask
 
 
 router = APIRouter()
@@ -688,6 +690,114 @@ def segment_all_ward_items_visual():
     - Returns the annotated detection image (with mask overlays) as a PNG.
     """
     result = segment_all_ward_items()
+    if not result.detection_image_base64:
+        raise HTTPException(status_code=500, detail="Detection produced no image.")
+    image_bytes = base64.b64decode(result.detection_image_base64)
+    return Response(content=image_bytes, media_type="image/png")
+
+
+@router.post("/segment-all-ward-unknown-items", response_model=SegAllWardItemsResponse, summary="Detect all ward items, including unrecognized ones, using the RF-DETR + SAM2 + DINOv2 pipeline")
+def segment_all_ward_unknown_items():
+    """
+    - Captures an image from the RealSense camera.
+    - Runs the ward_object_pipeline (https://github.com/sstc-aiteam/ward_object_pipeline):
+      an RF-DETR detector finds the chair/platform ROI and candidate objects, SAM2 segments
+      everything sitting inside that ROI, and DINOv2 verifies the detector's class guess.
+    - Items where the detector and DINOv2 disagree (or either is inconclusive) are reported
+      with class_name "unknown", so this endpoint can surface ward items that
+      `segment_all_ward_items()` cannot recognize.
+    - Returns bounding boxes, mask contour polygons, poses, and an annotated image (base64 PNG).
+    """
+    try:
+        if not realsense_service.is_initialized:
+            realsense_service._initialize()
+
+        color_image, depth_image = realsense_service.capture_images()
+        T_cam_wrist, R_gripper2base, t_gripper2base_vec, _ = object_detection_service.get_detection_transform_context()
+
+        color_image_rgb = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
+        pipeline = ward_object_pipeline_service.get_pipeline()
+        result = pipeline.predict(color_image_rgb, verbose=False)
+
+        detection_image = color_image.copy()
+        detected_items: list[SegWardItem] = []
+
+        for idx, obj in enumerate(result.get("objects", [])):
+            class_name = obj["class_name"]
+            bbox = [int(round(v)) for v in obj["bbox"]]
+            mask = compressed_rle_to_binary_mask(obj["rle_mask"]).astype(bool)
+            confidence = float(result["final_results"][idx].get("rfdetr_confidence", 0.0))
+
+            obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, mask_contour = \
+                object_detection_service.locate_mask_in_base(
+                    mask, bbox, color_image, depth_image,
+                    T_cam_wrist, R_gripper2base, t_gripper2base_vec,
+                )
+
+            detected_items.append(
+                SegWardItem(
+                    class_name=class_name,
+                    bbox=bbox,
+                    confidence=round(confidence, 4),
+                    mask_contour=mask_contour,
+                    object_pose_in_base=obj_coords.tolist() if obj_coords is not None else None,
+                    object_pixel_coords=pixel_coords,
+                    object_yaw_deg=object_yaw_deg,
+                    object_yaw_rad=object_yaw_rad,
+                    depth_in_meters=depth_in_meters,
+                )
+            )
+
+            color = palette_color(idx)
+            label = f"{class_name} {confidence:.2f}"
+            if mask_contour:
+                draw_seg_mask_annotation(detection_image, mask_contour, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES)
+            draw_detection_annotation(detection_image, bbox, pixel_coords, label, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES)
+            draw_yaw_annotation(
+                detection_image, bbox, pixel_coords, object_yaw_deg, object_yaw_rad, show_label=True, color=color, class_name=class_name, skip_classes=settings.ANNOTATION_SKIP_CLASSES,
+            )
+
+        b64_image = None
+        success, encoded_img = cv2.imencode('.png', detection_image)
+        if success:
+            b64_image = base64.b64encode(encoded_img).decode('utf-8')
+
+        if not result.get("success", True):
+            msg = result.get("reason", "Pipeline failed.")
+        elif detected_items:
+            msg = f"Detected {len(detected_items)} ward item(s)."
+        else:
+            msg = "No ward items detected in the current view."
+        return SegAllWardItemsResponse(message=msg, detected_items=detected_items, detection_image_base64=b64_image)
+
+    except RealSenseError as e:
+        logger.error(f"Camera error in /segment-all-ward-unknown-items: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Camera error: {str(e)}")
+    except ObjectDetectionError as e:
+        logger.error(f"Failed in /segment-all-ward-unknown-items: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /segment-all-ward-unknown-items: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+@router.post(
+    "/segment-all-ward-unknown-items-visual",
+    summary="Detect all ward items, including unrecognized ones, and return annotated image with masks",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Returns the camera image with all detected ward items (including 'unknown') and segmentation masks drawn on it.",
+        }
+    },
+)
+def segment_all_ward_unknown_items_visual():
+    """
+    - Delegates to `segment_all_ward_unknown_items()` for full detection logic.
+    - Returns the annotated detection image (with mask overlays) as a PNG.
+    """
+    result = segment_all_ward_unknown_items()
     if not result.detection_image_base64:
         raise HTTPException(status_code=500, detail="Detection produced no image.")
     image_bytes = base64.b64decode(result.detection_image_base64)

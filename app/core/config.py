@@ -38,6 +38,17 @@ class Settings(BaseSettings):
         'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb'
     ]
 
+    # Ward object pipeline (RF-DETR + SAM2 + DINOv2) settings, used to detect ward items
+    # including ones unrecognized by the fixed WARD_ITEM_CLASS_NAMES list (reported as "unknown").
+    # See https://github.com/sstc-aiteam/ward_object_pipeline (branch: feature/yolo26-detector-backend)
+    WARD_OBJECT_PIPELINE_BACKEND: str = "rfdetr"
+    WARD_OBJECT_PIPELINE_RFDETR_WEIGHTS_PATH: str = str(PROJECT_ROOT / "checkpoint_best_total.pth")
+    WARD_OBJECT_PIPELINE_DINOV2_CACHE_PATH: str = str(PROJECT_ROOT / "dinov2_reference_cache.pt")
+    WARD_OBJECT_PIPELINE_NUM_CLASSES: int = 11
+    WARD_OBJECT_PIPELINE_DETECTOR_THRESHOLD: float = 0.3
+    WARD_OBJECT_PIPELINE_DINOV2_THRESHOLD: float = 0.75
+    WARD_OBJECT_PIPELINE_MIN_DETECTOR_CONFIDENCE: float = 0.50
+
     # Classes excluded from drawing
     ANNOTATION_SKIP_CLASSES: list[str] = ["chair_surface"]
 
