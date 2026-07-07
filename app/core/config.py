@@ -35,7 +35,7 @@ class Settings(BaseSettings):
 
     WARD_ITEM_CLASS_NAMES: list[str] = [
         'ac_remotecontrol', 'bottle_alcohol_spray', 'chair_surface', 'cotton_swab', 'cotton_swabs_pp',
-        'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb'
+        'disposable_mask', 'gauze_pp', 'saline', 'syringe_nipro', 'waterproof_bandages_ppb', 'unknown'
     ]
 
     # Ward object pipeline (RF-DETR + SAM2 + DINOv2) settings, used to detect ward items
