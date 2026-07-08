@@ -7,11 +7,11 @@ pip install -r requirements.txt
 ```
 
 ### Python packages for JetPack 6.2
-Google >> "pytorch package for jetpack 6.2"
-Python version MUST be 3.10
-Use python -m pip install $PkgName to ensure install package in venv
-Install PyTorch and Torchvision with CUDA support
-python -m pip install torch==2.8.0 torchvision==0.23.0 --index-url https://pypi.jetson-ai-lab.io/jp6/cu126
+- Google >> "pytorch package for jetpack 6.2"
+- Python version MUST be 3.10
+- Use `python -m pip install $PkgName` to ensure install package in venv
+- Install PyTorch and Torchvision with CUDA support  
+  - `python -m pip install torch==2.8.0 torchvision==0.23.0 --index-url https://pypi.jetson-ai-lab.io/jp6/cu126`
 
 ### Run service
 ```
