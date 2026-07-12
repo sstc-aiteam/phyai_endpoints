@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     # See https://github.com/sstc-aiteam/ward_object_pipeline (branch: feature/yolo26-detector-backend)
     WARD_OBJECT_PIPELINE_BACKEND: str = "rfdetr"
     WARD_OBJECT_PIPELINE_RFDETR_WEIGHTS_PATH: str = str(PROJECT_ROOT / "checkpoint_best_total.pth")
+    WARD_OBJECT_PIPELINE_YOLO_WEIGHTS_PATH: str = str(PROJECT_ROOT / "ward_item_seg.pt")
     WARD_OBJECT_PIPELINE_DINOV2_CACHE_PATH: str = str(PROJECT_ROOT / "dinov2_reference_cache.pt")
     WARD_OBJECT_PIPELINE_NUM_CLASSES: int = 11
     WARD_OBJECT_PIPELINE_DETECTOR_THRESHOLD: float = 0.3
