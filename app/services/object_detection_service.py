@@ -161,6 +161,33 @@ class ObjectDetectionService:
         except HandEyeCalibrationError as e:
             raise ObjectDetectionError(f"Error during object detection: {e}") from e
 
+    def _pixel_depth_to_base_pose(
+        self,
+        u,
+        v,
+        bbox,
+        color_image,
+        depth_image,
+        T_cam_wrist,
+        R_gripper2base,
+        t_gripper2base_vec,
+    ):
+        depth_in_meters, p_cam = self._get_3d_point_from_pixel(depth_image, u, v)
+        object_yaw_deg, object_yaw_rad = self.calc_yaw_from_bbox_pca(color_image, bbox)
+
+        object_coords = None
+        if p_cam is not None:
+            p_cam_homog = np.array(list(p_cam) + [1.0])
+
+            T_wrist_base = np.eye(4)
+            T_wrist_base[:3, :3] = R_gripper2base
+            T_wrist_base[:3, 3] = t_gripper2base_vec
+
+            p_base = T_wrist_base @ T_cam_wrist @ p_cam_homog
+            object_coords = p_base[:3]
+
+        return object_coords, object_yaw_deg, object_yaw_rad, depth_in_meters
+
     def locate_box_in_base(
         self,
         box,
@@ -183,19 +210,33 @@ class ObjectDetectionService:
             u, v = self._get_box_center(box)
             mask_contour = None
 
-        depth_in_meters, p_cam = self._get_3d_point_from_pixel(depth_image, u, v)
-        object_yaw_deg, object_yaw_rad = self.calc_yaw_from_bbox_pca(color_image, bbox)
+        object_coords, object_yaw_deg, object_yaw_rad, depth_in_meters = self._pixel_depth_to_base_pose(
+            u, v, bbox, color_image, depth_image, T_cam_wrist, R_gripper2base, t_gripper2base_vec,
+        )
 
-        object_coords = None
-        if p_cam is not None:
-            p_cam_homog = np.array(list(p_cam) + [1.0])
+        return object_coords, [u, v], bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, mask_contour
 
-            T_wrist_base = np.eye(4)
-            T_wrist_base[:3, :3] = R_gripper2base
-            T_wrist_base[:3, 3] = t_gripper2base_vec
+    def locate_mask_in_base(
+        self,
+        mask,
+        bbox,
+        color_image,
+        depth_image,
+        T_cam_wrist,
+        R_gripper2base,
+        t_gripper2base_vec,
+    ):
+        """
+        Same as locate_box_in_base, but for a raw full-image binary mask (e.g. from the
+        ward_object_pipeline RF-DETR + SAM2 pipeline) instead of an ultralytics Boxes/Masks pair.
+        """
+        centroid = self._get_binary_mask_centroid(mask)
+        u, v = centroid if centroid is not None else self._get_bbox_center(bbox)
+        mask_contour = self._mask_to_contour(mask)
 
-            p_base = T_wrist_base @ T_cam_wrist @ p_cam_homog
-            object_coords = p_base[:3]
+        object_coords, object_yaw_deg, object_yaw_rad, depth_in_meters = self._pixel_depth_to_base_pose(
+            u, v, bbox, color_image, depth_image, T_cam_wrist, R_gripper2base, t_gripper2base_vec,
+        )
 
         return object_coords, [u, v], bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, mask_contour
 
@@ -323,6 +364,11 @@ class ObjectDetectionService:
         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
         return int((x1 + x2) / 2), int((y1 + y2) / 2)
 
+    def _get_bbox_center(self, bbox) -> tuple[int, int]:
+        """Return (u, v) pixel center of a plain [x1, y1, x2, y2] bbox."""
+        x1, y1, x2, y2 = bbox
+        return int((x1 + x2) / 2), int((y1 + y2) / 2)
+
     def _get_mask_centroid(self, masks, idx: int) -> tuple[int, int] | None:
         """Return (u, v) centroid of the segmentation mask at index idx, or None."""
         if masks is None or idx >= len(masks.xy):
@@ -331,6 +377,21 @@ class ObjectDetectionService:
         if len(contour) == 0:
             return None
         return int(np.mean(contour[:, 0])), int(np.mean(contour[:, 1]))
+
+    def _get_binary_mask_centroid(self, mask) -> tuple[int, int] | None:
+        """Return (u, v) centroid of a full-image binary mask, or None if empty."""
+        ys, xs = np.nonzero(mask)
+        if len(xs) == 0:
+            return None
+        return int(np.mean(xs)), int(np.mean(ys))
+
+    def _mask_to_contour(self, mask) -> list[list[int]] | None:
+        """Return the largest external contour of a full-image binary mask as [[x, y], ...]."""
+        contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+        largest = max(contours, key=cv2.contourArea)
+        return largest.reshape(-1, 2).astype(int).tolist()
 
     def _get_candidate_boxes_with_idx(self, results, object_class_id: int):
         """Return (original_idx, box) pairs for matching boxes, ordered by confidence."""

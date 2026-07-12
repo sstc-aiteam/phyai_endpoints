@@ -3,7 +3,17 @@ uvicorn
 pyrealsense2
 opencv-python
 opencv-contrib-python
-numpy
+numpy<2  # Jetson/Tegra torch build is compiled against NumPy 1.x ABI
 pydantic-settings
-ur_rtde # Universal Robots Real-Time Data Exchange (RTDE) library for Python
+ur_rtde  # Universal Robots Real-Time Data Exchange (RTDE) library for Python
 ultralytics
+
+# ward_object_pipeline (RF-DETR + SAM2 + DINOv2) dependencies
+# https://github.com/sstc-aiteam/ward_object_pipeline (branch: feature/yolo26-detector-backend)
+torch    # pip install torch==2.8.0 torchvision==0.23.0 --index-url https://pypi.jetson-ai-lab.io/jp6/cu126 for JetPack 6.2 with Jetson AGX Orin
+torchvision
+transformers
+supervision
+shapely
+pycocotools
+rfdetr
