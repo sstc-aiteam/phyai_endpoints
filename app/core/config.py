@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # Directory for saving captured images
     CAPTURE_DIR: Path = PROJECT_ROOT / "captured_images"
 
+    # OpenAI settings for grasp verification
+    OPENAI_API_KEY: str | None = None
+    OPENAI_GRASP_VERIFICATION_MODEL: str = "gpt-5.6"
+
     # Hand-eye calibration file
     CALIBRATION_FILE: str = str(PROJECT_ROOT / "handeye_result.npy")
 
