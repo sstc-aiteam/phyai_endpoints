@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.endpoints import camera, hand_eye, object_detection
+from app.api.endpoints import camera, grasp_verification, hand_eye, object_detection
 
 api_router = APIRouter()
 
@@ -7,3 +7,4 @@ api_router = APIRouter()
 api_router.include_router(camera.router, prefix="/camera", tags=["camera"])
 api_router.include_router(object_detection.router, prefix="/detection", tags=["Object Detection"])
 api_router.include_router(hand_eye.router, prefix="/hand-eye", tags=["Hand-Eye Calibration"])
+api_router.include_router(grasp_verification.router, prefix="/grasp-verification", tags=["Grasp Verification"])
