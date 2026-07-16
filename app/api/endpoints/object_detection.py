@@ -52,6 +52,9 @@ class GraspResponse(BaseModel):
 
 class LocateWardItemRequest(BaseModel):
     object_name: str = Field(..., description=f"Name of ward item to detect. Valid values: {settings.WARD_ITEM_CLASS_NAMES}")
+    depth_offset_m: float | None = Field(
+        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+    )
 
 class CenterOnObjectRequest(BaseModel):
     object_class_id: int = Field(settings.BOTTLE_CLASS_ID, description="The class ID of the object to detect.")
@@ -126,7 +129,11 @@ def _pointcloud_ply_response(
 
 # --- API Endpoints ---
 @router.post("/locate-bottle", response_model=DetectResponse, summary="Locate a bottle and return its pose")
-def locate_bottle():
+def locate_bottle(
+    depth_offset_m: float | None = Query(
+        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+    ),
+):
     """
     - Captures an image from the RealSense camera.
     - Uses YOLOv8 to detect a 'bottle' (COCO class ID 39).
@@ -136,7 +143,7 @@ def locate_bottle():
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
         bottle_model = bottle_yolo_service.get_model()
         gripper_vec, arm_joint_info, bottle_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image, _ = \
-            object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle", model=bottle_model)
+            object_detection_service.locate_object_in_base(BOTTLE_CLASS_ID, "bottle", model=bottle_model, depth_offset_m=depth_offset_m)
 
         b64_image = None
         if detected_image is not None:
@@ -191,12 +198,16 @@ def locate_bottle():
         }
     },
 )
-def locate_bottle_visual():
+def locate_bottle_visual(
+    depth_offset_m: float | None = Query(
+        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+    ),
+):
     """
     - Delegates to `locate_bottle()` for full detection logic.
     - Returns the annotated detection image as a PNG.
     """
-    result = locate_bottle()
+    result = locate_bottle(depth_offset_m=depth_offset_m)
     if not result.get("detection_image_base64"):
         raise HTTPException(status_code=500, detail="Detection produced no image.")
     image_bytes = base64.b64decode(result["detection_image_base64"])
@@ -218,6 +229,9 @@ def locate_bottle_pointcloud(
         0.08,
         description="Keep only points within +/- this many meters from the detected center depth. Set to 0 to keep the full bbox.",
     ),
+    depth_offset_m: float | None = Query(
+        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+    ),
 ):
     """
     Detects the bottle bbox, then returns the same frame's RealSense point cloud cropped to that
@@ -237,6 +251,7 @@ def locate_bottle_pointcloud(
             bottle_model,
             color_image=color_image,
             depth_image=depth_image,
+            depth_offset_m=depth_offset_m,
         )
         if bottle_coords is None or bbox is None:
             raise HTTPException(status_code=404, detail="Bottle not detected in the current view.")
@@ -285,6 +300,9 @@ def locate_bottle_pointcloud_visual(
         0.08,
         description="Show points within +/- this many meters from the detected center depth.",
     ),
+    depth_offset_m: float | None = Query(
+        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+    ),
 ):
     """
     Shows the dynamic detection bbox and depth-filtered pixels used before the bottle
@@ -303,6 +321,7 @@ def locate_bottle_pointcloud_visual(
             bottle_model,
             color_image=color_image,
             depth_image=depth_image,
+            depth_offset_m=depth_offset_m,
         )
         if bottle_coords is None or bbox is None:
             raise HTTPException(status_code=404, detail="Bottle not detected in the current view.")
@@ -411,7 +430,7 @@ def detect_ward_item(req: LocateWardItemRequest):
 
     try:
         gripper_vec, arm_joint_info, obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image, _ = \
-            object_detection_service.locate_object_in_base(class_id, req.object_name, model=model)
+            object_detection_service.locate_object_in_base(class_id, req.object_name, model=model, depth_offset_m=req.depth_offset_m)
 
         b64_image = None
         if detected_image is not None:
@@ -443,7 +462,11 @@ def detect_ward_item(req: LocateWardItemRequest):
 
 
 @router.post("/detect-all-ward-items", response_model=DetectAllWardItemsResponse, summary="Detect all ward items in the current camera view")
-def detect_all_ward_items():
+def detect_all_ward_items(
+    depth_offset_m: float | None = Query(
+        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+    ),
+):
     """
     - Captures an image from the RealSense camera.
     - Uses the `ward_item.pt` YOLOv26n model to detect all ward item classes.
@@ -474,6 +497,7 @@ def detect_all_ward_items():
                 T_cam_wrist,
                 R_gripper2base,
                 t_gripper2base_vec,
+                depth_offset_m=depth_offset_m,
             )
 
             detected_items.append(
@@ -534,12 +558,16 @@ def detect_all_ward_items():
         }
     },
 )
-def detect_all_ward_items_visual():
+def detect_all_ward_items_visual(
+    depth_offset_m: float | None = Query(
+        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+    ),
+):
     """
     - Delegates to `detect_all_ward_items()` for full detection logic.
     - Returns the annotated detection image as a PNG.
     """
-    result = detect_all_ward_items()
+    result = detect_all_ward_items(depth_offset_m=depth_offset_m)
     if not result.detection_image_base64:
         raise HTTPException(status_code=500, detail="Detection produced no image.")
     image_bytes = base64.b64decode(result.detection_image_base64)
@@ -566,7 +594,7 @@ def segment_ward_item(req: LocateWardItemRequest):
 
     try:
         gripper_vec, arm_joint_info, obj_coords, pixel_coords, bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, detected_image, mask_contour = \
-            object_detection_service.locate_object_in_base(class_id, req.object_name, model=model)
+            object_detection_service.locate_object_in_base(class_id, req.object_name, model=model, depth_offset_m=req.depth_offset_m)
 
         b64_image = None
         if detected_image is not None:
@@ -598,7 +626,11 @@ def segment_ward_item(req: LocateWardItemRequest):
 
 
 @router.post("/segment-all-ward-items", response_model=SegAllWardItemsResponse, summary="Detect all ward items using ward_item_seg.pt with segmentation masks")
-def segment_all_ward_items():
+def segment_all_ward_items(
+    depth_offset_m: float | None = Query(
+        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+    ),
+):
     """
     - Captures an image from the RealSense camera.
     - Uses the `ward_item_seg.pt` segmentation model to detect all ward item classes.
@@ -629,6 +661,7 @@ def segment_all_ward_items():
                     box, color_image, depth_image,
                     T_cam_wrist, R_gripper2base, t_gripper2base_vec,
                     masks, box_idx,
+                    depth_offset_m=depth_offset_m,
                 )
 
             detected_items.append(
@@ -684,12 +717,16 @@ def segment_all_ward_items():
         }
     },
 )
-def segment_all_ward_items_visual():
+def segment_all_ward_items_visual(
+    depth_offset_m: float | None = Query(
+        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+    ),
+):
     """
     - Delegates to `segment_all_ward_items()` for full detection logic.
     - Returns the annotated detection image (with mask overlays) as a PNG.
     """
-    result = segment_all_ward_items()
+    result = segment_all_ward_items(depth_offset_m=depth_offset_m)
     if not result.detection_image_base64:
         raise HTTPException(status_code=500, detail="Detection produced no image.")
     image_bytes = base64.b64decode(result.detection_image_base64)
@@ -741,6 +778,7 @@ def segment_ward_item_pointcloud(
                 model,
                 color_image=color_image,
                 depth_image=depth_image,
+                depth_offset_m=req.depth_offset_m,
             )
 
         if obj_coords is None or bbox is None:
@@ -821,6 +859,7 @@ def segment_ward_item_pointcloud_visual(
                 model,
                 color_image=color_image,
                 depth_image=depth_image,
+                depth_offset_m=req.depth_offset_m,
             )
 
         if obj_coords is None or bbox is None:
@@ -946,6 +985,7 @@ def segment_unknown_ward_item(req: LocateWardItemRequest):
                 object_detection_service.locate_mask_in_base(
                     mask, candidate_bbox, color_image, depth_image,
                     T_cam_wrist, R_gripper2base, t_gripper2base_vec,
+                    depth_offset_m=req.depth_offset_m,
                 )
             if candidate_coords is None:
                 continue
@@ -1059,6 +1099,7 @@ def segment_unknown_ward_item_pointcloud(
                 object_detection_service.locate_mask_in_base(
                     mask, candidate_bbox, color_image, depth_image,
                     T_cam_wrist, R_gripper2base, t_gripper2base_vec,
+                    depth_offset_m=req.depth_offset_m,
                 )
             if candidate_coords is None:
                 continue
@@ -1161,6 +1202,7 @@ def segment_unknown_ward_item_pointcloud_visual(
                 object_detection_service.locate_mask_in_base(
                     mask, candidate_bbox, color_image, depth_image,
                     T_cam_wrist, R_gripper2base, t_gripper2base_vec,
+                    depth_offset_m=req.depth_offset_m,
                 )
             if candidate_coords is None:
                 continue
@@ -1250,7 +1292,11 @@ def segment_unknown_ward_item_pointcloud_visual(
     response_model=SegAllWardItemsResponse, 
     summary="Detect all ward items, including unrecognized ones, using the RF-DETR + SAM2 + DINOv2 pipeline"
 )
-def segment_unknown_all_ward_items():
+def segment_unknown_all_ward_items(
+    depth_offset_m: float | None = Query(
+        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+    ),
+):
     """
     - Captures an image from the RealSense camera.
     - Runs the ward_object_pipeline (https://github.com/sstc-aiteam/ward_object_pipeline):
@@ -1285,6 +1331,7 @@ def segment_unknown_all_ward_items():
                 object_detection_service.locate_mask_in_base(
                     mask, bbox, color_image, depth_image,
                     T_cam_wrist, R_gripper2base, t_gripper2base_vec,
+                    depth_offset_m=depth_offset_m,
                 )
 
             detected_items.append(
@@ -1345,12 +1392,16 @@ def segment_unknown_all_ward_items():
         }
     },
 )
-def segment_unknown_all_ward_items_visual():
+def segment_unknown_all_ward_items_visual(
+    depth_offset_m: float | None = Query(
+        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+    ),
+):
     """
     - Delegates to `segment_unknown_all_ward_items()` for full detection logic.
     - Returns the annotated detection image (with mask overlays) as a PNG.
     """
-    result = segment_unknown_all_ward_items()
+    result = segment_unknown_all_ward_items(depth_offset_m=depth_offset_m)
     if not result.detection_image_base64:
         raise HTTPException(status_code=500, detail="Detection produced no image.")
     image_bytes = base64.b64decode(result.detection_image_base64)

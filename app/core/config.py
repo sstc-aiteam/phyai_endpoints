@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     # Distance to stay away from the object when approaching
     APPROACH_OFFSET_IN_METERS: float = 0.15
 
+    # Constant offset applied to measured depth readings (see RealSenseService.adjust_depth)
+    DEPTH_OFFSET_IN_METERS: float = 0.0
+
     class Config:
         case_sensitive = True
 
