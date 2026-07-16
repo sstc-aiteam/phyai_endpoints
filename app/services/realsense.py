@@ -291,12 +291,10 @@ class RealSenseService:
     def adjust_depth(self, depth_in_meters, offset_m=None):
         """
         Adjusts a depth reading by adding a constant offset.
-        Defaults to settings.DEPTH_OFFSET_IN_METERS if no offset is given.
         """
-        if offset_m is None:
-            offset_m = settings.DEPTH_OFFSET_IN_METERS
-        d = depth_in_meters + offset_m
+        d = depth_in_meters if offset_m is None else depth_in_meters + offset_m
         logging.info(f"Adjusting depth: adjusted={d:.4f}m = original={depth_in_meters:.4f}m + offset={offset_m:.4f}m, ")
+        
         return d
 
     def shutdown(self):

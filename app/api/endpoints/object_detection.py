@@ -53,7 +53,7 @@ class GraspResponse(BaseModel):
 class LocateWardItemRequest(BaseModel):
     object_name: str = Field(..., description=f"Name of ward item to detect. Valid values: {settings.WARD_ITEM_CLASS_NAMES}")
     depth_offset_m: float | None = Field(
-        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+        None, description="Constant offset (meters) added to the measured depth."
     )
 
 class CenterOnObjectRequest(BaseModel):
@@ -131,7 +131,7 @@ def _pointcloud_ply_response(
 @router.post("/locate-bottle", response_model=DetectResponse, summary="Locate a bottle and return its pose")
 def locate_bottle(
     depth_offset_m: float | None = Query(
-        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+        None, description="Constant offset (meters) added to the measured depth."
     ),
 ):
     """
@@ -200,7 +200,7 @@ def locate_bottle(
 )
 def locate_bottle_visual(
     depth_offset_m: float | None = Query(
-        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+        None, description="Constant offset (meters) added to the measured depth."
     ),
 ):
     """
@@ -458,7 +458,7 @@ def detect_ward_item(req: LocateWardItemRequest):
 @router.post("/detect-all-ward-items", response_model=DetectAllWardItemsResponse, summary="Detect all ward items in the current camera view")
 def detect_all_ward_items(
     depth_offset_m: float | None = Query(
-        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+        None, description="Constant offset (meters) added to the measured depth."
     ),
 ):
     """
@@ -554,7 +554,7 @@ def detect_all_ward_items(
 )
 def detect_all_ward_items_visual(
     depth_offset_m: float | None = Query(
-        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+        None, description="Constant offset (meters) added to the measured depth."
     ),
 ):
     """
@@ -622,7 +622,7 @@ def segment_ward_item(req: LocateWardItemRequest):
 @router.post("/segment-all-ward-items", response_model=SegAllWardItemsResponse, summary="Detect all ward items using ward_item_seg.pt with segmentation masks")
 def segment_all_ward_items(
     depth_offset_m: float | None = Query(
-        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+        None, description="Constant offset (meters) added to the measured depth."
     ),
 ):
     """
@@ -713,7 +713,7 @@ def segment_all_ward_items(
 )
 def segment_all_ward_items_visual(
     depth_offset_m: float | None = Query(
-        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+        None, description="Constant offset (meters) added to the measured depth."
     ),
 ):
     """
@@ -749,6 +749,7 @@ def segment_ward_item_pointcloud(
     Segments the ward item using the seg model, then returns the same frame's RealSense
     point cloud cropped to the item's mask contour, with points too far behind the object
     removed, and transformed into the robot base frame.
+    Note that the point cloud does not consinder depth_offset_m, as the point cloud is generated from the raw depth image.
     """
     if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
         raise HTTPException(
@@ -1057,6 +1058,7 @@ def segment_unknown_ward_item_pointcloud(
     `/segment-unknown-ward-item`, then returns the same frame's RealSense point cloud cropped
     to the item's mask contour, with points too far behind the object removed, and transformed
     into the robot base frame.
+    Note that the point cloud does not consinder depth_offset_m, as the point cloud is generated from the raw depth image.
     """
     if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
         raise HTTPException(
@@ -1286,7 +1288,7 @@ def segment_unknown_ward_item_pointcloud_visual(
 )
 def segment_unknown_all_ward_items(
     depth_offset_m: float | None = Query(
-        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+        None, description="Constant offset (meters) added to the measured depth."
     ),
 ):
     """
@@ -1386,7 +1388,7 @@ def segment_unknown_all_ward_items(
 )
 def segment_unknown_all_ward_items_visual(
     depth_offset_m: float | None = Query(
-        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+        None, description="Constant offset (meters) added to the measured depth."
     ),
 ):
     """

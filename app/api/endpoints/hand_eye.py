@@ -48,7 +48,7 @@ class VerifyPointRequest(BaseModel):
     u: int = Field(..., description="The horizontal pixel coordinate (x-axis) of the point to verify.")
     v: int = Field(..., description="The vertical pixel coordinate (y-axis) of the point to verify.")
     depth_offset_m: float | None = Field(
-        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
+        None, description="Constant offset (meters) added to the measured depth."
     )
 
 class VerifyPointResponse(BaseModel):
@@ -250,8 +250,6 @@ def verify_point(req: VerifyPointRequest):
             raise HTTPException(status_code=400, detail=f"Depth at pixel ({req.u}, {req.v}) is zero. Cannot calculate 3D point. Please select another point.")
 
         # 3. Deproject pixel to a 3D point in the camera's frame
-        # Explicit 0 offset: this endpoint verifies raw calibration accuracy and must not
-        # be shifted by the object-detection DEPTH_OFFSET_IN_METERS correction.
         _, point_in_cam_frame = realsense_service.deproject_pixel_to_point([req.u, req.v], depth_in_meters, depth_offset_m=req.depth_offset_m)
 
         # 4. Get current robot pose
