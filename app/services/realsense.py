@@ -263,17 +263,20 @@ class RealSenseService:
         pixel: list[int], 
         depth: float, 
         depth_offset_m: float | None = None,
-    ) -> list[float]:
+    ) -> tuple[float, list[float]]:
         """
         Deprojects a 2D pixel with a given depth into a 3D point in the camera's coordinate space.
 
         Args:
             pixel (list[int]): The [u, v] pixel coordinates.
             depth (float): The depth at that pixel, in meters.
+            depth_offset_m (float | None): Constant offset added to `depth` before deprojecting.
+                Defaults to settings.DEPTH_OFFSET_IN_METERS if None.
 
         Returns:
-            list[float]: The [x, y, z] coordinates of the 3D point.
-            
+            tuple[float, list[float]]: The offset-adjusted depth in meters, and the [x, y, z]
+            coordinates of the 3D point computed from that adjusted depth.
+
         Raises:
             RealSenseError: If the camera intrinsics are not available.
         """
@@ -283,7 +286,7 @@ class RealSenseService:
         d = self.adjust_depth(depth, depth_offset_m)  # Adjust depth with offset if needed
 
         # pyrealsense2.rs2_deproject_pixel_to_point takes intrinsics, pixel, and depth
-        return rs.rs2_deproject_pixel_to_point(self.color_intrinsics, pixel, d)
+        return d, rs.rs2_deproject_pixel_to_point(self.color_intrinsics, pixel, d)
 
     def adjust_depth(self, depth_in_meters, offset_m=None):
         """

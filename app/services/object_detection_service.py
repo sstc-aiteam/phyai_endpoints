@@ -145,7 +145,7 @@ class ObjectDetectionService:
         p_cam = None
         if depth_in_meters > 0:
             # Deproject: Pixel -> Camera 3D
-            p_cam = realsense_service.deproject_pixel_to_point([u, v], depth_in_meters, depth_offset_m=depth_offset_m)
+            depth_in_meters, p_cam = realsense_service.deproject_pixel_to_point([u, v], depth_in_meters, depth_offset_m=depth_offset_m)
 
         return depth_in_meters, p_cam
 

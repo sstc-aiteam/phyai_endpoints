@@ -247,7 +247,7 @@ def verify_point(req: VerifyPointRequest):
             raise HTTPException(status_code=400, detail=f"Depth at pixel ({req.u}, {req.v}) is zero. Cannot calculate 3D point. Please select another point.")
 
         # 3. Deproject pixel to a 3D point in the camera's frame
-        point_in_cam_frame = realsense_service.deproject_pixel_to_point([req.u, req.v], depth_in_meters)
+        _, point_in_cam_frame = realsense_service.deproject_pixel_to_point([req.u, req.v], depth_in_meters)
 
         # 4. Get current robot pose
         R_gripper2base, t_gripper2base_vec = hand_eye_calibration_service.get_robot_pose()
