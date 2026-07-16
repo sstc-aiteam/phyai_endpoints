@@ -271,7 +271,7 @@ class RealSenseService:
             pixel (list[int]): The [u, v] pixel coordinates.
             depth (float): The depth at that pixel, in meters.
             depth_offset_m (float | None): Constant offset added to `depth` before deprojecting.
-                Defaults to settings.DEPTH_OFFSET_IN_METERS if None.
+                No offset is applied if None.
 
         Returns:
             tuple[float, list[float]]: The offset-adjusted depth in meters, and the [x, y, z]
@@ -293,7 +293,7 @@ class RealSenseService:
         Adjusts a depth reading by adding a constant offset.
         """
         d = depth_in_meters if offset_m is None else depth_in_meters + offset_m
-        logging.info(f"Adjusting depth: adjusted={d:.4f}m = original={depth_in_meters:.4f}m + offset={offset_m:.4f}m, ")
+        logging.info(f"Adjusting depth: adjusted={d:.4f}m = original={depth_in_meters:.4f}m + offset={offset_m}, ")
         
         return d
 
