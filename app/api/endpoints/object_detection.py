@@ -229,13 +229,11 @@ def locate_bottle_pointcloud(
         0.08,
         description="Keep only points within +/- this many meters from the detected center depth. Set to 0 to keep the full bbox.",
     ),
-    depth_offset_m: float | None = Query(
-        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
-    ),
 ):
     """
     Detects the bottle bbox, then returns the same frame's RealSense point cloud cropped to that
     bbox, filtered by the bottle depth, and transformed into the robot base frame.
+    Note that the point cloud does not consinder depth_offset_m, as the point cloud is generated from the raw depth image.
     """
     try:
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
@@ -251,7 +249,6 @@ def locate_bottle_pointcloud(
             bottle_model,
             color_image=color_image,
             depth_image=depth_image,
-            depth_offset_m=depth_offset_m,
         )
         if bottle_coords is None or bbox is None:
             raise HTTPException(status_code=404, detail="Bottle not detected in the current view.")
@@ -300,13 +297,11 @@ def locate_bottle_pointcloud_visual(
         0.08,
         description="Show points within +/- this many meters from the detected center depth.",
     ),
-    depth_offset_m: float | None = Query(
-        None, description="Constant offset (meters) added to the measured depth. Defaults to settings.DEPTH_OFFSET_IN_METERS."
-    ),
 ):
     """
     Shows the dynamic detection bbox and depth-filtered pixels used before the bottle
     point cloud is transformed into the robot base frame.
+    Note that the point cloud does not consinder depth_offset_m, as the point cloud is generated from the raw depth image.
     """
     try:
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
@@ -321,7 +316,6 @@ def locate_bottle_pointcloud_visual(
             bottle_model,
             color_image=color_image,
             depth_image=depth_image,
-            depth_offset_m=depth_offset_m,
         )
         if bottle_coords is None or bbox is None:
             raise HTTPException(status_code=404, detail="Bottle not detected in the current view.")
@@ -859,7 +853,6 @@ def segment_ward_item_pointcloud_visual(
                 model,
                 color_image=color_image,
                 depth_image=depth_image,
-                depth_offset_m=req.depth_offset_m,
             )
 
         if obj_coords is None or bbox is None:
@@ -1099,7 +1092,6 @@ def segment_unknown_ward_item_pointcloud(
                 object_detection_service.locate_mask_in_base(
                     mask, candidate_bbox, color_image, depth_image,
                     T_cam_wrist, R_gripper2base, t_gripper2base_vec,
-                    depth_offset_m=req.depth_offset_m,
                 )
             if candidate_coords is None:
                 continue
@@ -1168,6 +1160,7 @@ def segment_unknown_ward_item_pointcloud_visual(
     """
     Shows the ward_object_pipeline (RF-DETR + SAM2 + DINOv2) mask polygon after removing
     only points too far behind the detected item.
+    Note that the point cloud does not consinder depth_offset_m, as the point cloud is generated from the raw depth image.
     """
     if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
         raise HTTPException(
@@ -1202,7 +1195,6 @@ def segment_unknown_ward_item_pointcloud_visual(
                 object_detection_service.locate_mask_in_base(
                     mask, candidate_bbox, color_image, depth_image,
                     T_cam_wrist, R_gripper2base, t_gripper2base_vec,
-                    depth_offset_m=req.depth_offset_m,
                 )
             if candidate_coords is None:
                 continue
