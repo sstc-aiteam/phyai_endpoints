@@ -262,7 +262,7 @@ class RealSenseService:
         self, 
         pixel: list[int], 
         depth: float, 
-        depth_offset_m: None,
+        depth_offset_m: float | None = None,
     ) -> list[float]:
         """
         Deprojects a 2D pixel with a given depth into a 3D point in the camera's coordinate space.
