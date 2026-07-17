@@ -233,7 +233,8 @@ def locate_bottle_pointcloud(
     """
     Detects the bottle bbox, then returns the same frame's RealSense point cloud cropped to that
     bbox, filtered by the bottle depth, and transformed into the robot base frame.
-    Note that the point cloud does not consinder depth_offset_m, as the point cloud is generated from the raw depth image.
+    Note: `depth_offset_m` is ignored here — the point cloud is filtered using the raw
+    measured depth from the depth image, not an offset-adjusted value.
     """
     try:
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
@@ -301,7 +302,8 @@ def locate_bottle_pointcloud_visual(
     """
     Shows the dynamic detection bbox and depth-filtered pixels used before the bottle
     point cloud is transformed into the robot base frame.
-    Note that the point cloud does not consinder depth_offset_m, as the point cloud is generated from the raw depth image.
+    Note: `depth_offset_m` is ignored here — the point cloud is filtered using the raw
+    measured depth from the depth image, not an offset-adjusted value.
     """
     try:
         BOTTLE_CLASS_ID = settings.BOTTLE_CLASS_ID
@@ -749,7 +751,8 @@ def segment_ward_item_pointcloud(
     Segments the ward item using the seg model, then returns the same frame's RealSense
     point cloud cropped to the item's mask contour, with points too far behind the object
     removed, and transformed into the robot base frame.
-    Note that the point cloud does not consinder depth_offset_m, as the point cloud is generated from the raw depth image.
+    Note: `depth_offset_m` is ignored here — the point cloud is filtered using the raw
+    measured depth from the depth image, not an offset-adjusted value.
     """
     if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
         raise HTTPException(
@@ -773,7 +776,6 @@ def segment_ward_item_pointcloud(
                 model,
                 color_image=color_image,
                 depth_image=depth_image,
-                depth_offset_m=req.depth_offset_m,
             )
 
         if obj_coords is None or bbox is None:
@@ -1058,7 +1060,8 @@ def segment_unknown_ward_item_pointcloud(
     `/segment-unknown-ward-item`, then returns the same frame's RealSense point cloud cropped
     to the item's mask contour, with points too far behind the object removed, and transformed
     into the robot base frame.
-    Note that the point cloud does not consinder depth_offset_m, as the point cloud is generated from the raw depth image.
+    Note: `depth_offset_m` is ignored here — the point cloud is filtered using the raw
+    measured depth from the depth image, not an offset-adjusted value.
     """
     if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
         raise HTTPException(
@@ -1162,7 +1165,8 @@ def segment_unknown_ward_item_pointcloud_visual(
     """
     Shows the ward_object_pipeline (RF-DETR + SAM2 + DINOv2) mask polygon after removing
     only points too far behind the detected item.
-    Note that the point cloud does not consinder depth_offset_m, as the point cloud is generated from the raw depth image.
+    Note: `depth_offset_m` is ignored here — the point cloud is filtered using the raw
+    measured depth from the depth image, not an offset-adjusted value.
     """
     if req.object_name not in settings.WARD_ITEM_CLASS_NAMES:
         raise HTTPException(
