@@ -12,8 +12,9 @@ ultralytics
 
 # ward_object_pipeline (RF-DETR + SAM2 + DINOv2) dependencies
 # https://github.com/sstc-aiteam/ward_object_pipeline (branch: feature/yolo26-detector-backend)
-torch    # pip install torch==2.8.0 torchvision==0.23.0 --index-url https://pypi.jetson-ai-lab.io/jp6/cu126 for JetPack 6.2 with Jetson AGX Orin
-torchvision
+--extra-index-url https://pypi.jetson-ai-lab.io/jp6/cu126  # JetPack 6.2 CUDA wheels for Jetson AGX Orin
+torch==2.9.1
+torchvision==0.24.1
 transformers
 supervision
 shapely
