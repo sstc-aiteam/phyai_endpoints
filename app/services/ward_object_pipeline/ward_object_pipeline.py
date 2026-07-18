@@ -54,6 +54,8 @@ class WardObjectPipeline:
         sam2_min_inside_ratio=0.30,
         sam2_nested_contained_threshold=0.85,
         sam2_nms_iou_threshold=0.5,
+        sam2_use_fp16=True,
+        sam2_use_compile=True,
 
         # DINOv2
         dinov2_model_name="facebook/dinov2-base",
@@ -184,6 +186,8 @@ class WardObjectPipeline:
             min_inside_ratio=sam2_min_inside_ratio,
             nested_contained_threshold=sam2_nested_contained_threshold,
             nms_iou_threshold=sam2_nms_iou_threshold,
+            use_fp16=sam2_use_fp16,
+            use_compile=sam2_use_compile,
         )
 
         # --------------------------------------------------

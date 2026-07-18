@@ -1,5 +1,7 @@
 # sam2_roi_segmenter.py
 
+import contextlib
+
 import numpy as np
 import torch
 import torchvision
@@ -21,6 +23,8 @@ class SAM2ROISegmenter:
         nested_contained_threshold=0.85,
         nms_iou_threshold=0.5,
         keep_largest_component=True,
+        use_fp16=True,
+        use_compile=True,
     ):
         self.min_area_ratio = min_area_ratio
         self.max_roi_coverage = max_roi_coverage
@@ -39,6 +43,100 @@ class SAM2ROISegmenter:
             crop_n_layers=0,
             crop_nms_thresh=0.3,
         )
+
+        # fp16 autocast + torch.compile speedup, following
+        # https://github.com/sstc-aiteam/sam2-speedup
+        # Only meaningful on CUDA; CPU stays eager fp32.
+        self.is_cuda = torch.cuda.is_available() and device != "cpu"
+        self.autocast_dtype = None
+
+        if self.is_cuda:
+            self._load_and_optimize_model(use_fp16=use_fp16, use_compile=use_compile)
+
+    def _autocast(self):
+        if self.autocast_dtype is not None:
+            return torch.autocast("cuda", dtype=self.autocast_dtype)
+        return contextlib.nullcontext()
+
+    @staticmethod
+    def _cast_fp16_to_fp32(obj):
+        """
+        Recursively cast any float16 tensors back to float32.
+
+        Autocast is only applied inside the wrapped submodule forwards
+        (see _wrap_forward). Their outputs feed into pipeline postprocessing
+        (e.g. torchvision NMS, bbox extraction) that was written assuming
+        consistent dtypes and errors ("dets should have the same type as
+        scores") if a fp16 tensor leaks out next to fp32 ones. Casting back
+        at the forward boundary keeps the fp16 speedup for the heavy matmul
+        work while presenting fp32 tensors to everything downstream.
+        """
+        if torch.is_tensor(obj):
+            return obj.float() if obj.dtype == torch.float16 else obj
+        if isinstance(obj, tuple):
+            return tuple(SAM2ROISegmenter._cast_fp16_to_fp32(o) for o in obj)
+        if isinstance(obj, list):
+            return [SAM2ROISegmenter._cast_fp16_to_fp32(o) for o in obj]
+        if hasattr(obj, "items"):
+            for key, value in obj.items():
+                setattr(obj, key, SAM2ROISegmenter._cast_fp16_to_fp32(value))
+            return obj
+        return obj
+
+    def _wrap_forward(self, original_forward, use_compile):
+        fn = torch.compile(original_forward) if use_compile else original_forward
+
+        def wrapped(*args, **kwargs):
+            with self._autocast():
+                output = fn(*args, **kwargs)
+            return self._cast_fp16_to_fp32(output)
+
+        return wrapped
+
+    def _load_and_optimize_model(self, use_fp16, use_compile):
+        self.autocast_dtype = torch.float16 if use_fp16 else None
+
+        model = self.sam_generator.model
+        self._original_vision_forward = model.vision_encoder.forward
+        self._original_decoder_forward = model.mask_decoder.forward
+
+        model.vision_encoder.forward = self._wrap_forward(
+            self._original_vision_forward, use_compile
+        )
+        model.mask_decoder.forward = self._wrap_forward(
+            self._original_decoder_forward, use_compile
+        )
+
+        try:
+            self._warmup()
+        except Exception as exc:
+            if not use_compile:
+                raise
+
+            print(
+                "SAM2 torch.compile failed during warmup, "
+                f"falling back to eager mode: {exc}"
+            )
+            model.vision_encoder.forward = self._wrap_forward(
+                self._original_vision_forward, use_compile=False
+            )
+            model.mask_decoder.forward = self._wrap_forward(
+                self._original_decoder_forward, use_compile=False
+            )
+            self._warmup()
+
+    def _warmup(self, iters=2, image_size=(1024, 1024)):
+        print("Warming up SAM2 (fp16 + torch.compile)...")
+
+        dummy_image = Image.fromarray(
+            np.zeros((*image_size, 3), dtype=np.uint8)
+        )
+
+        with torch.inference_mode():
+            for _ in range(iters):
+                self.sam_generator(dummy_image)
+
+        print("SAM2 warmup complete.")
 
     def predict(self, crop_image, local_polygon_mask):
         """
@@ -73,7 +171,8 @@ class SAM2ROISegmenter:
             crop_image.astype(np.uint8)
         ).convert("RGB")
 
-        sam_output = self.sam_generator(crop_pil)
+        with torch.inference_mode():
+            sam_output = self.sam_generator(crop_pil)
 
         filtered_masks = []
         filtered_xyxy = []

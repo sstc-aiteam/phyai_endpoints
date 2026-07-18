@@ -12,11 +12,30 @@ ultralytics
 
 # ward_object_pipeline (RF-DETR + SAM2 + DINOv2) dependencies
 # https://github.com/sstc-aiteam/ward_object_pipeline (branch: feature/yolo26-detector-backend)
---extra-index-url https://pypi.jetson-ai-lab.io/jp6/cu126  # JetPack 6.2 CUDA wheels for Jetson AGX Orin
-torch==2.9.1
-torchvision==0.24.1
+#
+# torch/torchvision are pinned as direct URLs (not --extra-index-url + version)
+# to the exact JetPack 6.2 CUDA wheels for Jetson AGX Orin (cp310, linux_aarch64).
+# `--extra-index-url` does NOT prioritize this index over PyPI: when PyPI also
+# publishes a same-version wheel (e.g. a generic manylinux_2_28_aarch64 CPU-only
+# build), pip's resolver can silently pick that one instead of the CUDA build.
+# Direct URLs make the resolution unambiguous.
+torch @ https://pypi.jetson-ai-lab.io/jp6/cu126/+f/02f/de421eabbf626/torch-2.9.1-cp310-cp310-linux_aarch64.whl
+torchvision @ https://pypi.jetson-ai-lab.io/jp6/cu126/+f/d5b/caaf709f11750/torchvision-0.24.1-cp310-cp310-linux_aarch64.whl
 transformers
 supervision
 shapely
 pycocotools
 rfdetr
+
+# Required for the SAM2 fp16 + torch.compile speedup
+# (app/services/ward_object_pipeline/sam2_roi_segmenter.py) to actually engage
+# torch.compile on Jetson; otherwise it falls back to eager fp16 automatically.
+# See README.md "SAM2 fp16 + torch.compile on Jetson" for the env vars these need.
+#
+# triton is pinned as a direct URL for the same reason as torch/torchvision above:
+# PyPI also publishes a same-version manylinux wheel for aarch64, and pip's
+# resolver does not reliably prefer the Jetson-specific one.
+triton @ https://pypi.jetson-ai-lab.io/jp6/cu126/+f/e68/f6e7348753f16/triton-3.6.0-cp310-cp310-linux_aarch64.whl
+# This JetPack 6.2 torch build's libtorch_cuda.so links directly against
+# libcudss.so.0 (cuDSS), which is not bundled in the wheel itself.
+nvidia-cudss-cu12==0.8.0.10
