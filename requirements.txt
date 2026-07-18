@@ -4,6 +4,8 @@ pyrealsense2
 opencv-python
 opencv-contrib-python
 numpy<2  # Jetson/Tegra torch build is compiled against NumPy 1.x ABI
+scipy
+pillow
 pydantic-settings
 ur_rtde  # Universal Robots Real-Time Data Exchange (RTDE) library for Python
 ultralytics
