@@ -117,7 +117,7 @@ class ObjectDetectionService:
 
         return yaw_deg, math.radians(yaw_deg)
 
-    def _get_3d_point_from_pixel(self, depth_image, u, v):
+    def _get_3d_point_from_pixel(self, depth_image, u, v, depth_offset_m=None):
         """
         Calculates the depth and 3D point in the camera frame for a given pixel.
         If depth is 0, it attempts to find a valid depth in a 5x5 neighborhood.
@@ -145,7 +145,7 @@ class ObjectDetectionService:
         p_cam = None
         if depth_in_meters > 0:
             # Deproject: Pixel -> Camera 3D
-            p_cam = realsense_service.deproject_pixel_to_point([u, v], depth_in_meters)
+            depth_in_meters, p_cam = realsense_service.deproject_pixel_to_point([u, v], depth_in_meters, depth_offset_m=depth_offset_m)
 
         return depth_in_meters, p_cam
 
@@ -171,8 +171,10 @@ class ObjectDetectionService:
         T_cam_wrist,
         R_gripper2base,
         t_gripper2base_vec,
+        depth_offset=None,
     ):
-        depth_in_meters, p_cam = self._get_3d_point_from_pixel(depth_image, u, v)
+        depth_in_meters, p_cam = self._get_3d_point_from_pixel(depth_image, u, v, depth_offset_m=depth_offset)
+
         object_yaw_deg, object_yaw_rad = self.calc_yaw_from_bbox_pca(color_image, bbox)
 
         object_coords = None
@@ -198,6 +200,7 @@ class ObjectDetectionService:
         t_gripper2base_vec,
         masks=None,
         box_idx: int | None = None,
+        depth_offset_m=None,
     ):
         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
         bbox = [int(x1), int(y1), int(x2), int(y2)]
@@ -212,6 +215,7 @@ class ObjectDetectionService:
 
         object_coords, object_yaw_deg, object_yaw_rad, depth_in_meters = self._pixel_depth_to_base_pose(
             u, v, bbox, color_image, depth_image, T_cam_wrist, R_gripper2base, t_gripper2base_vec,
+            depth_offset=depth_offset_m,
         )
 
         return object_coords, [u, v], bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, mask_contour
@@ -225,6 +229,7 @@ class ObjectDetectionService:
         T_cam_wrist,
         R_gripper2base,
         t_gripper2base_vec,
+        depth_offset_m=None,
     ):
         """
         Same as locate_box_in_base, but for a raw full-image binary mask (e.g. from the
@@ -236,6 +241,7 @@ class ObjectDetectionService:
 
         object_coords, object_yaw_deg, object_yaw_rad, depth_in_meters = self._pixel_depth_to_base_pose(
             u, v, bbox, color_image, depth_image, T_cam_wrist, R_gripper2base, t_gripper2base_vec,
+            depth_offset=depth_offset_m,
         )
 
         return object_coords, [u, v], bbox, object_yaw_deg, object_yaw_rad, depth_in_meters, mask_contour
@@ -246,7 +252,7 @@ class ObjectDetectionService:
     #     see reference: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/cfg/datasets/coco.yaml#L18
     # param object_name: A human-readable name for the object (used for logging and error messages)
     ## 
-    def locate_object_in_base(self, object_class_id: int, object_name: str, model=None, color_image=None, depth_image=None):
+    def locate_object_in_base(self, object_class_id: int, object_name: str, model=None, color_image=None, depth_image=None, depth_offset_m=None):
         """
         Locates a specified object using YOLO and calculates its pose in the robot's base frame.
         Supports both detection and segmentation models — when the model outputs masks, the mask
@@ -293,6 +299,7 @@ class ObjectDetectionService:
                     t_gripper2base_vec,
                     masks,
                     box_idx,
+                    depth_offset_m=depth_offset_m,
                 )
                 if object_coords is None:
                     continue

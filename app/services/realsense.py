@@ -258,25 +258,51 @@ class RealSenseService:
             depth_margin_m=depth_margin_m,
         )
 
-    def deproject_pixel_to_point(self, pixel: list[int], depth: float) -> list[float]:
+    def deproject_pixel_to_point(
+        self, 
+        pixel: list[int], 
+        depth: float, 
+        depth_offset_m: float | None = None,
+    ) -> tuple[float, list[float]]:
         """
         Deprojects a 2D pixel with a given depth into a 3D point in the camera's coordinate space.
 
         Args:
             pixel (list[int]): The [u, v] pixel coordinates.
             depth (float): The depth at that pixel, in meters.
+            depth_offset_m (float | None): Constant offset added to `depth` before deprojecting.
+                No offset is applied if None.
 
         Returns:
-            list[float]: The [x, y, z] coordinates of the 3D point.
-            
+            tuple[float, list[float]]: The offset-adjusted depth in meters, and the [x, y, z]
+            coordinates of the 3D point computed from that adjusted depth.
+
         Raises:
-            RealSenseError: If the camera intrinsics are not available.
+            RealSenseError: If the camera intrinsics are not available, or if the
+                offset-adjusted depth is not positive.
         """
         if not self.color_intrinsics:
             raise RealSenseError("Cannot deproject point: color intrinsics not available. Ensure the camera is initialized.")
-        
+
+        d = self.adjust_depth(depth, depth_offset_m)  # Adjust depth with offset if needed
+
+        if d <= 0:
+            raise RealSenseError(
+                f"Adjusted depth {d:.4f}m (original={depth:.4f}m, offset={depth_offset_m}) is not positive. "
+                "Cannot deproject a point at or behind the camera."
+            )
+
         # pyrealsense2.rs2_deproject_pixel_to_point takes intrinsics, pixel, and depth
-        return rs.rs2_deproject_pixel_to_point(self.color_intrinsics, pixel, depth)
+        return d, rs.rs2_deproject_pixel_to_point(self.color_intrinsics, pixel, d)
+
+    def adjust_depth(self, depth_in_meters, offset_m=None):
+        """
+        Adjusts a depth reading by adding a constant offset.
+        """
+        d = depth_in_meters if offset_m is None else depth_in_meters + offset_m
+        logging.info(f"Adjusting depth: adjusted={d:.4f}m = original={depth_in_meters:.4f}m + offset={offset_m}, ")
+        
+        return d
 
     def shutdown(self):
         """Stops the RealSense pipeline, checking if it was ever initialized."""
