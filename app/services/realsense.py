@@ -278,12 +278,19 @@ class RealSenseService:
             coordinates of the 3D point computed from that adjusted depth.
 
         Raises:
-            RealSenseError: If the camera intrinsics are not available.
+            RealSenseError: If the camera intrinsics are not available, or if the
+                offset-adjusted depth is not positive.
         """
         if not self.color_intrinsics:
             raise RealSenseError("Cannot deproject point: color intrinsics not available. Ensure the camera is initialized.")
-        
+
         d = self.adjust_depth(depth, depth_offset_m)  # Adjust depth with offset if needed
+
+        if d <= 0:
+            raise RealSenseError(
+                f"Adjusted depth {d:.4f}m (original={depth:.4f}m, offset={depth_offset_m}) is not positive. "
+                "Cannot deproject a point at or behind the camera."
+            )
 
         # pyrealsense2.rs2_deproject_pixel_to_point takes intrinsics, pixel, and depth
         return d, rs.rs2_deproject_pixel_to_point(self.color_intrinsics, pixel, d)
